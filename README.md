@@ -12,7 +12,7 @@ The implementation follows the current [CLIProxyAPI plugin contract](https://git
 - Signs every relay request with the `mrs-sig-v1` Ed25519 protocol.
 - Removes a leading `mirasim/` model prefix and removes unsupported Claude `output_config` fields.
 - Retries one upstream HTTP 401 with a fresh device ticket.
-- Loads the live model catalog from `GET /v1/models`, with a static eight-model fallback for startup discovery.
+- Loads the live model catalog from `GET /v1/models`, publishes only `claude-*` entries, and uses a static five-model Claude fallback for startup discovery.
 - Accepts and emits CLIProxyAPI's `openai`, `openai-response`, `claude`, `gemini`, and `codex` formats.
 - Preserves streaming SSE and translates tool definitions, tool selection, tool calls, and tool continuations through CLIProxyAPI's built-in translators.
 - Exposes the Mirasim rate-limit signals through a read-only plugin management route.
@@ -30,6 +30,8 @@ Mirasim does not currently expose a usable raw Chat Completions upstream. The pl
 Codex Responses uses upstream SSE even for a non-streaming downstream request. For non-streaming callers, the plugin collects the terminal `response.completed` or `response.incomplete` event and returns one translated JSON response.
 
 Catalog presence is not proof that every model is currently routable. Relay capacity and accepted request shape remain time-sensitive upstream behavior.
+
+The GPT/Codex execution path remains implemented for compatibility work, but GPT models are intentionally filtered from both static and per-auth model discovery. CLIProxyAPI therefore advertises only Claude models. See [ADR 0002](docs/decisions/0002-publish-claude-only-model-catalog.md).
 
 ## Requirements
 

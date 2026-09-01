@@ -16,9 +16,6 @@ var fallbackModelIDs = []string{
 	"claude-opus-4-8",
 	"claude-opus-5",
 	"claude-sonnet-5",
-	"gpt-5.6-luna",
-	"gpt-5.6-sol",
-	"gpt-5.6-terra",
 }
 
 type Provider struct {
@@ -46,19 +43,33 @@ func (p *Provider) ModelsForAuth(ctx context.Context, req pluginapi.AuthModelReq
 	if errCatalog != nil {
 		return pluginapi.ModelResponse{}, errCatalog
 	}
-	models := make([]pluginapi.ModelInfo, 0, len(catalog.Models))
-	for _, remote := range catalog.Models {
-		models = append(models, modelInfo(remote.ID, remote.Object, remote.Created, remote.OwnedBy))
-	}
-	return pluginapi.ModelResponse{Provider: credentials.Provider, Models: models}, nil
+	return pluginapi.ModelResponse{Provider: credentials.Provider, Models: exposedModels(catalog.Models)}, nil
 }
 
 func fallbackModels() []pluginapi.ModelInfo {
 	models := make([]pluginapi.ModelInfo, 0, len(fallbackModelIDs))
 	for _, id := range fallbackModelIDs {
+		if !isExposedModel(id) {
+			continue
+		}
 		models = append(models, modelInfo(id, "model", 0, "mirasim"))
 	}
 	return models
+}
+
+func exposedModels(catalog []mirasim.RemoteModel) []pluginapi.ModelInfo {
+	models := make([]pluginapi.ModelInfo, 0, len(catalog))
+	for _, remote := range catalog {
+		if !isExposedModel(remote.ID) {
+			continue
+		}
+		models = append(models, modelInfo(remote.ID, remote.Object, remote.Created, remote.OwnedBy))
+	}
+	return models
+}
+
+func isExposedModel(id string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(id)), "claude-")
 }
 
 func modelInfo(id, object string, created int64, owner string) pluginapi.ModelInfo {
@@ -69,10 +80,6 @@ func modelInfo(id, object string, created int64, owner string) pluginapi.ModelIn
 	if owner == "" {
 		owner = "mirasim"
 	}
-	generationMethods := []string{"messages"}
-	if strings.HasPrefix(strings.ToLower(id), "gpt-") {
-		generationMethods = append(generationMethods, "responses")
-	}
 	return pluginapi.ModelInfo{
 		ID:                         id,
 		Object:                     object,
@@ -82,7 +89,7 @@ func modelInfo(id, object string, created int64, owner string) pluginapi.ModelIn
 		DisplayName:                id,
 		Name:                       id,
 		Description:                id + " via Mirasim",
-		SupportedGenerationMethods: generationMethods,
+		SupportedGenerationMethods: []string{"messages"},
 		SupportedInputModalities:   []string{"text"},
 		SupportedOutputModalities:  []string{"text"},
 	}

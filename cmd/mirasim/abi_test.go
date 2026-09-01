@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 func TestABIRegisterAndManagementRoute(t *testing.T) {
@@ -27,6 +29,26 @@ func TestABIRegisterAndManagementRoute(t *testing.T) {
 	}
 	if registration.SchemaVersion != pluginabi.SchemaVersion || !registration.Capabilities.ManagementAPI || !registration.Capabilities.Executor {
 		t.Fatalf("registration = %#v", registration)
+	}
+
+	raw, errModels := handleABIMethod(context.Background(), pluginabi.MethodModelStatic, []byte(`{}`))
+	if errModels != nil {
+		t.Fatalf("static models error = %v", errModels)
+	}
+	if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil || !envelope.OK {
+		t.Fatalf("static models envelope = %s, error = %v", raw, errDecode)
+	}
+	var modelResponse pluginapi.ModelResponse
+	if errDecode := json.Unmarshal(envelope.Result, &modelResponse); errDecode != nil {
+		t.Fatalf("decode static models: %v", errDecode)
+	}
+	if len(modelResponse.Models) != 5 {
+		t.Fatalf("static models = %#v", modelResponse.Models)
+	}
+	for _, model := range modelResponse.Models {
+		if !strings.HasPrefix(strings.ToLower(model.ID), "claude-") {
+			t.Fatalf("non-Claude model exposed through ABI: %#v", model)
+		}
 	}
 
 	raw, errManagement := handleABIMethod(context.Background(), pluginabi.MethodManagementRegister, []byte(`{}`))
