@@ -1,0 +1,29 @@
+package plugin
+
+import (
+	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+)
+
+func TestBuildDeclaresProviderCapabilities(t *testing.T) {
+	built := Build([]byte(`
+plugins:
+  configs:
+    mirasim:
+      credential-dir: .mirasim-credentials
+`))
+	if built.Metadata.Name != "Mirasim Provider" || built.Metadata.GitHubRepository == "" {
+		t.Fatalf("metadata = %#v", built.Metadata)
+	}
+	caps := built.Capabilities
+	if caps.AuthProvider == nil || caps.ModelProvider == nil || caps.Executor == nil || caps.CommandLinePlugin == nil || caps.ManagementAPI == nil {
+		t.Fatalf("capabilities are incomplete: %#v", caps)
+	}
+	if caps.ExecutorModelScope != pluginapi.ExecutorModelScopeOAuth {
+		t.Fatalf("executor scope = %q", caps.ExecutorModelScope)
+	}
+	if len(caps.ExecutorInputFormats) != 5 || len(caps.ExecutorOutputFormats) != 5 {
+		t.Fatalf("formats = %#v / %#v", caps.ExecutorInputFormats, caps.ExecutorOutputFormats)
+	}
+}

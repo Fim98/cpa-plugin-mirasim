@@ -1,0 +1,9 @@
+/dist/
+*.dll
+*.dylib
+*.so
+*.h
+*.zip
+*.sha256
+checksums.txt
+coverage.out
