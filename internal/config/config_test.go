@@ -63,6 +63,13 @@ func TestParseInvalidConfigFallsBackToDefaults(t *testing.T) {
 	}
 }
 
+func TestDefaultsUseMirasimProtocolVersion260(t *testing.T) {
+	t.Setenv("MIRASIM_CLIENT_VERSION", "")
+	if got := Defaults().ClientVersion; got != "0.0.260" {
+		t.Fatalf("ClientVersion = %q, want 0.0.260", got)
+	}
+}
+
 func TestResolveCredentialDirReturnsAbsoluteCleanPath(t *testing.T) {
 	resolved, errResolve := ResolveCredentialDir(filepath.Join(t.TempDir(), "nested", "..", "credentials"))
 	if errResolve != nil {

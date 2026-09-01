@@ -1,6 +1,6 @@
 # Mirasim Provider Plugin
 
-This plugin adds Mirasim provider support to CLIProxyAPI through its native plugin ABI. It ports the runtime behavior of `mira2api` into the host process: project-local plaintext credentials, token refresh, Ed25519 device signatures, device tickets, dynamic models, Messages/Responses forwarding, protocol translation, streaming, and Mirasim's response-header rate-limit signals.
+This plugin adds Mirasim provider support to CLIProxyAPI through its native plugin ABI. It ports the runtime behavior of `mira2api` into the host process: project-local plaintext credentials, token refresh, Ed25519 device signatures, encrypted relay metadata, device tickets, dynamic models, Messages/Responses forwarding, protocol translation, streaming, and Mirasim's response-header rate-limit signals.
 
 The implementation follows the current [CLIProxyAPI plugin contract](https://github.com/router-for-me/CLIProxyAPI) and the packaging pattern used by [cpa-plugin-gemini-cli](https://github.com/router-for-me/cpa-plugin-gemini-cli).
 
@@ -9,7 +9,8 @@ The implementation follows the current [CLIProxyAPI plugin contract](https://git
 - Imports an existing `.mirasim-credentials` directory without copying tokens or private-key material into CLIProxyAPI auth JSON.
 - Refreshes access and rotated refresh tokens through `POST /auth/refresh` and writes them back with restricted file permissions where supported.
 - Mints and caches 15-minute device tickets through `POST /v1/device/session`.
-- Signs every relay request with the `mrs-sig-v1` Ed25519 protocol.
+- Signs requests with the `mrs-sig-v2` Ed25519 protocol and binds the current bearer credential, client version, metadata, and body.
+- Seals normal relay-request signature and session metadata into `x-mirasim-enc` with `mrs-seal-v1` (X25519, HKDF-SHA256, and ChaCha20-Poly1305).
 - Removes a leading `mirasim/` model prefix and removes unsupported Claude `output_config` fields.
 - Retries one upstream HTTP 401 with a fresh device ticket.
 - Loads the live model catalog from `GET /v1/models`, publishes only `claude-*` entries, and uses a static five-model Claude fallback for startup discovery.
@@ -32,6 +33,19 @@ Codex Responses uses upstream SSE even for a non-streaming downstream request. F
 Catalog presence is not proof that every model is currently routable. Relay capacity and accepted request shape remain time-sensitive upstream behavior.
 
 The GPT/Codex execution path remains implemented for compatibility work, but GPT models are intentionally filtered from both static and per-auth model discovery. CLIProxyAPI therefore advertises only Claude models. See [ADR 0002](docs/decisions/0002-publish-claude-only-model-catalog.md).
+
+## Authentication envelope
+
+Mirasim 0.0.260 uses two related authentication flows:
+
+| Request | Bearer credential | Mirasim headers |
+|---|---|---|
+| `POST /v1/device/session` | Access token | Plain `mrs-sig-v2` signature headers |
+| Normal relay request | Device ticket | `x-mirasim-client` plus sealed `x-mirasim-enc` |
+
+Normal requests include generated session, agent, and call metadata in the v2 signature before encryption. Incoming client-supplied `x-mirasim-*` headers are discarded. The signature uses the pathname only; query parameters are forwarded but are not part of the signature or seal associated data.
+
+The bundled relay X25519 public key matches Mirasim 0.0.260. `MIRASIM_SEAL_PUBKEY` can override that public key at process level when the relay rotates it; the value must be standard base64 encoding of exactly 32 bytes. Invalid keys fail closed rather than exposing metadata.
 
 ## Requirements
 
@@ -71,8 +85,8 @@ The generated `.h` file is not needed by CLIProxyAPI. Tagged releases are built 
 Copy the platform library into CLIProxyAPI's plugin directory. Both unversioned and versioned names are supported, for example:
 
 - `plugins/mirasim.dll`
-- `plugins/mirasim-v0.1.0.dll`
-- `plugins/linux/amd64/mirasim-v0.1.0.so`
+- `plugins/mirasim-v0.2.0.dll`
+- `plugins/linux/amd64/mirasim-v0.2.0.so`
 
 Enable dynamic plugins and configure Mirasim in CLIProxyAPI's `config.yaml`:
 
@@ -86,10 +100,10 @@ plugins:
       credential-dir: C:\path\to\mira2api\.mirasim-credentials
       relay-url: https://mirasim-relay.mirofish.ai
       admin-url: https://admin.test.mirofish.ai
-      client-version: 0.0.146
+      client-version: 0.0.260
 ```
 
-The endpoint and client-version fields are optional and default to the values shown above. `MIRASIM_CREDENTIAL_DIR`, `MIRASIM_RELAY_URL`, `MIRASIM_ADMIN_URL`, and `MIRASIM_CLIENT_VERSION` provide process-level defaults; explicit plugin configuration wins.
+The endpoint and client-version fields are optional and default to the values shown above. `MIRASIM_CREDENTIAL_DIR`, `MIRASIM_RELAY_URL`, `MIRASIM_ADMIN_URL`, and `MIRASIM_CLIENT_VERSION` provide process-level defaults; explicit plugin configuration wins. Existing auth records that explicitly contain an older `client_version` must also be updated to `0.0.260`.
 
 Import the directory as a CLIProxyAPI auth record:
 
@@ -106,7 +120,7 @@ The saved auth JSON contains the resolved directory and public endpoint configur
   "credential_dir": "C:\\path\\to\\mira2api\\.mirasim-credentials",
   "relay_url": "https://mirasim-relay.mirofish.ai",
   "admin_url": "https://admin.test.mirofish.ai",
-  "client_version": "0.0.146"
+  "client_version": "0.0.260"
 }
 ```
 
@@ -137,8 +151,9 @@ The first form works when exactly one Mirasim auth is loaded. The response inclu
 - Relay requests use CLIProxyAPI's host HTTP client so host transport and request lifecycle policies remain active.
 - Token refresh uses a private 60-second HTTP client because sending the refresh-token JSON body through the host request logger could persist a long-lived secret. The private client follows standard proxy environment variables, but it cannot use a CLIProxyAPI auth-specific proxy setting.
 - Incoming `Authorization`, `Proxy-Authorization`, and `X-Api-Key` values are removed before Mirasim authentication headers are injected.
+- Incoming `x-mirasim-*` values are removed, and ordinary relay metadata is sent only inside `x-mirasim-enc`.
 
-The architectural rationale and alternatives are recorded in [ADR 0001](docs/decisions/0001-mirasim-provider-boundaries.md).
+The provider boundaries are recorded in [ADR 0001](docs/decisions/0001-mirasim-provider-boundaries.md), and the v2 authentication design is recorded in [ADR 0003](docs/decisions/0003-adopt-mirasim-v2-authentication-envelope.md).
 
 ## License
 

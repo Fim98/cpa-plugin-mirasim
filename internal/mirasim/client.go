@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -27,7 +25,6 @@ import (
 )
 
 const (
-	signatureVersion  = "mrs-sig-v1"
 	sessionPath       = "/v1/device/session"
 	modelsPath        = "/v1/models"
 	accessRefreshLead = 2 * time.Minute
@@ -79,6 +76,7 @@ type Client struct {
 	privateKey      ed25519.PrivateKey
 	publicKeyBase64 string
 	deviceID        string
+	sessionID       string
 	ticket          string
 	ticketExpiresAt time.Time
 	quota           QuotaSnapshot
@@ -105,7 +103,11 @@ func (c *Client) Validate() error {
 	if errLoad := c.loadLocked(); errLoad != nil {
 		return errLoad
 	}
-	return c.loadSignerLocked()
+	if errSigner := c.loadSignerLocked(); errSigner != nil {
+		return errSigner
+	}
+	_, errSealKey := relaySealPublicKey()
+	return errSealKey
 }
 
 func (c *Client) NextRefreshAfter(now time.Time) time.Time {
@@ -255,11 +257,18 @@ func (c *Client) authHeaders(ctx context.Context, client pluginapi.HostHTTPClien
 	if errTicket != nil {
 		return nil, errTicket
 	}
-	headers, errSign := c.signatureHeadersLocked(method, requestPath, body)
+	metadata, errMetadata := c.relayMetadataLocked(requestPath)
+	if errMetadata != nil {
+		return nil, errMetadata
+	}
+	headers, errSign := c.signatureHeadersLocked(method, requestPath, ticket, metadata, body)
 	if errSign != nil {
 		return nil, errSign
 	}
 	headers.Set("Authorization", "Bearer "+ticket)
+	if errSeal := sealRelayHeaders(headers, method, requestPath); errSeal != nil {
+		return nil, errSeal
+	}
 	return headers, nil
 }
 
@@ -279,7 +288,7 @@ func (c *Client) ticketLocked(ctx context.Context, client pluginapi.HostHTTPClie
 		if errMarshal != nil {
 			return "", errMarshal
 		}
-		signed, errSign := c.signatureHeadersLocked(http.MethodPost, sessionPath, body)
+		signed, errSign := c.signatureHeadersLocked(http.MethodPost, sessionPath, c.accessToken, nil, body)
 		if errSign != nil {
 			return "", errSign
 		}
@@ -442,34 +451,6 @@ func (c *Client) loadSignerLocked() error {
 	return nil
 }
 
-func (c *Client) signatureHeadersLocked(method, requestPath string, body []byte) (http.Header, error) {
-	if errSigner := c.loadSignerLocked(); errSigner != nil {
-		return nil, errSigner
-	}
-	nonceBytes := make([]byte, 12)
-	if _, errRandom := rand.Read(nonceBytes); errRandom != nil {
-		return nil, fmt.Errorf("generate Mirasim signature nonce: %w", errRandom)
-	}
-	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	bodyDigest := sha256.Sum256(body)
-	payload := strings.Join([]string{
-		signatureVersion,
-		strings.ToUpper(strings.TrimSpace(method)),
-		requestPath,
-		timestamp,
-		base64.RawURLEncoding.EncodeToString(nonceBytes),
-		hex.EncodeToString(bodyDigest[:]),
-	}, "\n")
-	signature := ed25519.Sign(c.privateKey, []byte(payload))
-	return http.Header{
-		"X-Mirasim-Device": []string{c.deviceID},
-		"X-Mirasim-Ts":     []string{timestamp},
-		"X-Mirasim-Nonce":  []string{base64.RawURLEncoding.EncodeToString(nonceBytes)},
-		"X-Mirasim-Sig":    []string{base64.RawURLEncoding.EncodeToString(signature)},
-		"X-Mirasim-Client": []string{c.storage.ClientVersion},
-	}, nil
-}
-
 func (c *Client) readCredentialLocked(name string, required bool) (string, error) {
 	path := filepath.Join(c.storage.CredentialDir, name)
 	raw, errRead := os.ReadFile(path)
@@ -530,10 +511,14 @@ func (c *Client) observeQuota(headers http.Header) {
 
 func prepareHeaders(source, auth http.Header, stream bool) http.Header {
 	headers := cloneHeader(source)
+	for name := range headers {
+		if strings.HasPrefix(strings.ToLower(name), "x-mirasim-") {
+			headers.Del(name)
+		}
+	}
 	for _, name := range []string{
 		"Authorization", "Proxy-Authorization", "X-Api-Key", "Host", "Content-Length",
 		"Connection", "Keep-Alive", "Proxy-Authenticate", "Te", "Trailer", "Transfer-Encoding", "Upgrade",
-		"X-Mirasim-Device", "X-Mirasim-Ts", "X-Mirasim-Nonce", "X-Mirasim-Sig", "X-Mirasim-Client",
 	} {
 		headers.Del(name)
 	}

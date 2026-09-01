@@ -11,7 +11,7 @@ import (
 const (
 	DefaultRelayURL      = "https://mirasim-relay.mirofish.ai"
 	DefaultAdminURL      = "https://admin.test.mirofish.ai"
-	DefaultClientVersion = "0.0.146"
+	DefaultClientVersion = "0.0.260"
 )
 
 // Settings contains provider defaults. Concrete auth files may override these
