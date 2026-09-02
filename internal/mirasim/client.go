@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/credentials"
 )
 
@@ -65,6 +66,18 @@ func (p *Pool) Client(storage credentials.Storage) *Client {
 	return client
 }
 
+// Forget drops a cached client after its on-disk OAuth material is replaced.
+// Existing in-flight requests keep their own client; future requests reload the
+// newly installed tokens and key.
+func (p *Pool) Forget(storage credentials.Storage) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	delete(p.clients, storage.Key())
+	p.mu.Unlock()
+}
+
 type Client struct {
 	storage credentials.Storage
 
@@ -80,14 +93,11 @@ type Client struct {
 	ticket          string
 	ticketExpiresAt time.Time
 	quota           QuotaSnapshot
-	authHTTPClient  *http.Client
+	authProxyURL    string
 }
 
 func NewClient(storage credentials.Storage) *Client {
-	return &Client{
-		storage:        storage,
-		authHTTPClient: &http.Client{Timeout: 60 * time.Second},
-	}
+	return &Client{storage: storage}
 }
 
 func (c *Client) Storage() credentials.Storage {
@@ -143,6 +153,30 @@ func (c *Client) RefreshAccess(ctx context.Context) (time.Time, error) {
 	c.ticket = ""
 	c.ticketExpiresAt = time.Time{}
 	return c.accessExpiresAt, nil
+}
+
+// SetAuthProxy configures the private token-refresh client without persisting
+// proxy credentials in the provider auth JSON. Relay calls still use the host
+// HTTP client; refresh calls deliberately avoid it because their body contains
+// the long-lived refresh token.
+func (c *Client) SetAuthProxy(proxyURL string) error {
+	proxyURL = strings.TrimSpace(proxyURL)
+	if _, _, errBuild := proxyutil.BuildHTTPTransport(proxyURL); errBuild != nil {
+		return fmt.Errorf("configure Mirasim auth proxy: %w", errBuild)
+	}
+	c.mu.Lock()
+	c.authProxyURL = proxyURL
+	c.mu.Unlock()
+	return nil
+}
+
+// RefreshAccessWithProxy remembers the host proxy for both scheduled and
+// request-time refreshes, then refreshes through the private client.
+func (c *Client) RefreshAccessWithProxy(ctx context.Context, proxyURL string) (time.Time, error) {
+	if errProxy := c.SetAuthProxy(proxyURL); errProxy != nil {
+		return time.Time{}, errProxy
+	}
+	return c.RefreshAccess(ctx)
 }
 
 func (c *Client) Do(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers http.Header, body []byte) (pluginapi.HTTPResponse, error) {
@@ -360,7 +394,16 @@ func (c *Client) refreshAccessLocked(ctx context.Context) error {
 		return fmt.Errorf("create Mirasim token refresh request: %w", errRequest)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	resp, errDo := c.authHTTPClient.Do(request)
+	transport, _, errTransport := proxyutil.BuildHTTPTransport(c.authProxyURL)
+	if errTransport != nil {
+		return fmt.Errorf("configure Mirasim auth proxy: %w", errTransport)
+	}
+	authHTTPClient := &http.Client{Timeout: 60 * time.Second}
+	if transport != nil {
+		authHTTPClient.Transport = transport
+		defer transport.CloseIdleConnections()
+	}
+	resp, errDo := authHTTPClient.Do(request)
 	if errDo != nil {
 		return fmt.Errorf("refresh Mirasim access token: %w", errDo)
 	}

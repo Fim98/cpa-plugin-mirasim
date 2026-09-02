@@ -11,6 +11,7 @@ func TestParseMirasimConfig(t *testing.T) {
 	t.Setenv("MIRASIM_RELAY_URL", "https://env-relay.example/")
 	t.Setenv("MIRASIM_ADMIN_URL", "https://env-admin.example/")
 	t.Setenv("MIRASIM_CLIENT_VERSION", "env-version")
+	t.Setenv("MIRASIM_OAUTH_PUBLIC_BASE_URL", "https://env-cpa.example/")
 
 	settings := Parse([]byte(`
 plugins:
@@ -20,6 +21,7 @@ plugins:
       relay-url: https://relay.example/
       admin-url: https://admin.example/
       client-version: 1.2.3
+      oauth-public-base-url: https://cpa.example/
 `))
 	if settings.CredentialDir != "./project-credentials" {
 		t.Fatalf("CredentialDir = %q", settings.CredentialDir)
@@ -32,6 +34,24 @@ plugins:
 	}
 	if settings.ClientVersion != "1.2.3" {
 		t.Fatalf("ClientVersion = %q", settings.ClientVersion)
+	}
+	if settings.OAuthPublicBaseURL != "https://cpa.example" {
+		t.Fatalf("OAuthPublicBaseURL = %q", settings.OAuthPublicBaseURL)
+	}
+}
+
+func TestParseRuntimePluginSubconfiguration(t *testing.T) {
+	settings := Parse([]byte(`
+enabled: true
+priority: 2
+credential-dir: /var/lib/mirasim/credentials
+relay-url: https://relay.runtime.example/
+admin-url: https://auth.runtime.example/
+client-version: 9.8.7
+oauth-public-base-url: https://cpa.runtime.example/gateway/
+`))
+	if settings.CredentialDir != "/var/lib/mirasim/credentials" || settings.RelayURL != "https://relay.runtime.example" || settings.AdminURL != "https://auth.runtime.example" || settings.ClientVersion != "9.8.7" || settings.OAuthPublicBaseURL != "https://cpa.runtime.example/gateway" {
+		t.Fatalf("settings = %#v", settings)
 	}
 }
 
@@ -63,10 +83,13 @@ func TestParseInvalidConfigFallsBackToDefaults(t *testing.T) {
 	}
 }
 
-func TestDefaultsUseMirasimProtocolVersion260(t *testing.T) {
+func TestDefaultsUseCurrentMirasimEndpointsAndProtocolVersion(t *testing.T) {
+	t.Setenv("MIRASIM_RELAY_URL", "")
+	t.Setenv("MIRASIM_ADMIN_URL", "")
 	t.Setenv("MIRASIM_CLIENT_VERSION", "")
-	if got := Defaults().ClientVersion; got != "0.0.260" {
-		t.Fatalf("ClientVersion = %q, want 0.0.260", got)
+	settings := Defaults()
+	if settings.RelayURL != "https://relay.mirasim.ai" || settings.AdminURL != "https://auth.mirasim.ai" || settings.ClientVersion != "0.0.272" {
+		t.Fatalf("defaults = %#v", settings)
 	}
 }
 

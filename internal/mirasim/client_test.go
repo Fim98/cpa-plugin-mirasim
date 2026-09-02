@@ -245,6 +245,35 @@ func TestRefreshAccessReadsLatestDiskTokenAndDoesNotLeakErrorBody(t *testing.T) 
 	}
 }
 
+func TestRefreshAccessWithProxyUsesHostProxyPrivately(t *testing.T) {
+	storage, _, _ := newTestStorage(t, futureJWT())
+	storage.AdminURL = "http://auth.invalid"
+	var calls atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Host != "auth.invalid" || r.URL.Path != "/auth/refresh" {
+			t.Errorf("proxied URL = %s", r.URL)
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !bytes.Contains(body, []byte("refresh-token")) {
+			t.Error("proxy did not receive the refresh request body")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": jwtWithExpiry(time.Now().Add(time.Hour))})
+	}))
+	defer proxy.Close()
+
+	client := NewClient(storage)
+	if _, errRefresh := client.RefreshAccessWithProxy(context.Background(), proxy.URL); errRefresh != nil {
+		t.Fatalf("RefreshAccessWithProxy() error = %v", errRefresh)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("proxy calls = %d, want 1", calls.Load())
+	}
+	if errProxy := client.SetAuthProxy("ftp://proxy.invalid"); errProxy == nil {
+		t.Fatal("unsupported proxy URL was accepted")
+	}
+}
+
 func TestParseModelCatalogSupportsDataAndModelsShapes(t *testing.T) {
 	models, errParse := ParseModelCatalog([]byte(`{"models":["one",{"id":"two"},{"id":"one"}]}`))
 	if errParse != nil {

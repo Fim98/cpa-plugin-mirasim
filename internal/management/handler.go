@@ -21,31 +21,55 @@ type HostServices interface {
 	HTTPClient() pluginapi.HostHTTPClient
 }
 
+type OAuthResources interface {
+	ConfigureOAuthResourceBasePath(string)
+	HandleOAuthResource(context.Context, pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error)
+}
+
 type Handler struct {
 	settings pluginconfig.Settings
 	pool     *mirasim.Pool
+	oauth    OAuthResources
 }
 
-func New(settings pluginconfig.Settings, pool *mirasim.Pool) *Handler {
-	return &Handler{settings: settings, pool: pool}
+func New(settings pluginconfig.Settings, pool *mirasim.Pool, oauth ...OAuthResources) *Handler {
+	handler := &Handler{settings: settings, pool: pool}
+	if len(oauth) > 0 {
+		handler.oauth = oauth[0]
+	}
+	return handler
 }
 
-func (h *Handler) RegisterManagement(context.Context, pluginapi.ManagementRegistrationRequest) (pluginapi.ManagementRegistrationResponse, error) {
-	return pluginapi.ManagementRegistrationResponse{Routes: []pluginapi.ManagementRoute{{
+func (h *Handler) RegisterManagement(_ context.Context, req pluginapi.ManagementRegistrationRequest) (pluginapi.ManagementRegistrationResponse, error) {
+	response := pluginapi.ManagementRegistrationResponse{Routes: []pluginapi.ManagementRoute{{
 		Method:      http.MethodGet,
 		Path:        QuotaRoute,
 		Description: "Refreshes GET /v1/models and returns Mirasim rate-limit response-header signals.",
 		Handler:     h,
-	}}}, nil
+	}}}
+	if h.oauth != nil {
+		h.oauth.ConfigureOAuthResourceBasePath(req.ResourceBasePath)
+		response.Resources = []pluginapi.ResourceRoute{
+			{Path: "/oauth/start", Description: "Starts a Mirasim browser OAuth login.", Handler: h},
+			{Path: "/oauth/callback", Description: "Receives a Mirasim browser OAuth callback.", Handler: h},
+		}
+	}
+	return response, nil
 }
 
-func (h *Handler) HandleManagement(context.Context, pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+func (h *Handler) HandleManagement(ctx context.Context, req pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	if h.oauth != nil && isOAuthResource(req.Path) {
+		return h.oauth.HandleOAuthResource(ctx, req)
+	}
 	return jsonResponse(http.StatusServiceUnavailable, map[string]any{
 		"error": "live host callbacks are unavailable",
 	}), nil
 }
 
 func (h *Handler) HandleWithHost(ctx context.Context, req pluginapi.ManagementRequest, host HostServices) (pluginapi.ManagementResponse, error) {
+	if h.oauth != nil && isOAuthResource(req.Path) {
+		return h.oauth.HandleOAuthResource(ctx, req)
+	}
 	if !strings.EqualFold(req.Method, http.MethodGet) {
 		return jsonResponse(http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"}), nil
 	}
@@ -84,6 +108,10 @@ func (h *Handler) HandleWithHost(ctx context.Context, req pluginapi.ManagementRe
 		"quota":       catalog.Quota,
 		"note":        "These are rate-limit signals from GET /v1/models response headers, not billing usage.",
 	}), nil
+}
+
+func isOAuthResource(path string) bool {
+	return strings.HasSuffix(path, "/oauth/start") || strings.HasSuffix(path, "/oauth/callback")
 }
 
 func resolveSingleAuth(ctx context.Context, host HostServices) (string, error) {

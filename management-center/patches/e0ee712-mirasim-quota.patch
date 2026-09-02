@@ -1,0 +1,786 @@
+diff --git a/src/features/authFiles/components/AuthFileQuotaSection.tsx b/src/features/authFiles/components/AuthFileQuotaSection.tsx
+index f958cad..6628df5 100644
+--- a/src/features/authFiles/components/AuthFileQuotaSection.tsx
++++ b/src/features/authFiles/components/AuthFileQuotaSection.tsx
+@@ -44,6 +44,7 @@ export function AuthFileQuotaSection(props: AuthFileQuotaSectionProps) {
+     if (quotaType === 'antigravity')
+       return state.antigravityQuota[file.name] as QuotaCardState | undefined;
+     if (quotaType === 'claude') return state.claudeQuota[file.name] as QuotaCardState | undefined;
++    if (quotaType === 'mirasim') return state.mirasimQuota[file.name] as QuotaCardState | undefined;
+     if (quotaType === 'codex') return state.codexQuota[file.name] as QuotaCardState | undefined;
+     if (quotaType === 'kimi') return state.kimiQuota[file.name] as QuotaCardState | undefined;
+     if (quotaType === 'xai') return state.xaiQuota[file.name] as QuotaCardState | undefined;
+diff --git a/src/features/authFiles/constants.ts b/src/features/authFiles/constants.ts
+index 8d72494..1067c83 100644
+--- a/src/features/authFiles/constants.ts
++++ b/src/features/authFiles/constants.ts
+@@ -24,12 +24,13 @@ export type AuthFileModelItem = {
+ };
+ export type AuthFileIconAsset = string | { light: string; dark: string };
+ 
+-export type QuotaProviderType = 'antigravity' | 'claude' | 'codex' | 'kimi' | 'xai';
++export type QuotaProviderType = 'antigravity' | 'claude' | 'mirasim' | 'codex' | 'kimi' | 'xai';
+ export type OAuthConfigLoadError = 'loading' | 'unsupported' | 'load' | null;
+ 
+ export const QUOTA_PROVIDER_TYPES = new Set<QuotaProviderType>([
+   'antigravity',
+   'claude',
++  'mirasim',
+   'codex',
+   'kimi',
+   'xai',
+@@ -58,6 +59,7 @@ export const AUTH_FILE_USING_API_PROVIDERS = new Set(['xai']);
+ export const AUTH_FILE_MANUAL_REFRESH_PROVIDERS = new Set([
+   'antigravity',
+   'claude',
++  'mirasim',
+   'codex',
+   'kimi',
+   'xai',
+diff --git a/src/features/quota/QuotaPage.tsx b/src/features/quota/QuotaPage.tsx
+index f1c07f3..83a2677 100644
+--- a/src/features/quota/QuotaPage.tsx
++++ b/src/features/quota/QuotaPage.tsx
+@@ -102,6 +102,7 @@ export function QuotaPage() {
+ 
+   const antigravityQuota = useQuotaStore((state) => state.antigravityQuota);
+   const claudeQuota = useQuotaStore((state) => state.claudeQuota);
++  const mirasimQuota = useQuotaStore((state) => state.mirasimQuota);
+   const codexQuota = useQuotaStore((state) => state.codexQuota);
+   const kimiQuota = useQuotaStore((state) => state.kimiQuota);
+   const xaiQuota = useQuotaStore((state) => state.xaiQuota);
+@@ -111,11 +112,12 @@ export function QuotaPage() {
+       ({
+         antigravity: antigravityQuota,
+         claude: claudeQuota,
++        mirasim: mirasimQuota,
+         codex: codexQuota,
+         kimi: kimiQuota,
+         xai: xaiQuota,
+       }) as unknown as Record<QuotaProviderType, Record<string, QuotaCardState>>,
+-    [antigravityQuota, claudeQuota, codexQuota, kimiQuota, xaiQuota]
++    [antigravityQuota, claudeQuota, mirasimQuota, codexQuota, kimiQuota, xaiQuota]
+   );
+ 
+   const getQuota = useCallback(
+diff --git a/src/features/quota/constants.ts b/src/features/quota/constants.ts
+index ca29a05..cb631bb 100644
+--- a/src/features/quota/constants.ts
++++ b/src/features/quota/constants.ts
+@@ -3,6 +3,7 @@ import type { QuotaProviderType } from './providers/types';
+ /** tab 顺序 = 旧页五分区的纵向顺序，'全部' tab 下卡片也按此分组排列。 */
+ export const QUOTA_TAB_ORDER: readonly QuotaProviderType[] = [
+   'claude',
++  'mirasim',
+   'antigravity',
+   'codex',
+   'xai',
+diff --git a/src/features/quota/logic.ts b/src/features/quota/logic.ts
+index 2b4b0ce..de8b191 100644
+--- a/src/features/quota/logic.ts
++++ b/src/features/quota/logic.ts
+@@ -8,6 +8,7 @@ import { ANTIGRAVITY_CONFIG } from './providers/antigravity/data';
+ import { CLAUDE_CONFIG } from './providers/claude/data';
+ import { CODEX_CONFIG } from './providers/codex/data';
+ import { KIMI_CONFIG } from './providers/kimi/data';
++import { MIRASIM_CONFIG } from './providers/mirasim/data';
+ import { XAI_CONFIG } from './providers/xai/data';
+ import type { QuotaProviderType } from './providers/types';
+ import { QUOTA_TAB_ORDER, type QuotaSortMode, type QuotaTabId } from './constants';
+@@ -15,6 +16,7 @@ import { QUOTA_TAB_ORDER, type QuotaSortMode, type QuotaTabId } from './constant
+ const QUOTA_FILTER_MAP: Record<QuotaProviderType, (file: AuthFileItem) => boolean> = {
+   antigravity: ANTIGRAVITY_CONFIG.filterFn,
+   claude: CLAUDE_CONFIG.filterFn,
++  mirasim: MIRASIM_CONFIG.filterFn,
+   codex: CODEX_CONFIG.filterFn,
+   kimi: KIMI_CONFIG.filterFn,
+   xai: XAI_CONFIG.filterFn,
+diff --git a/src/features/quota/providers/index.ts b/src/features/quota/providers/index.ts
+index b24942c..90cd556 100644
+--- a/src/features/quota/providers/index.ts
++++ b/src/features/quota/providers/index.ts
+@@ -15,6 +15,8 @@ import { ANTIGRAVITY_CONFIG } from './antigravity/data';
+ import { AntigravityQuotaBody } from './antigravity/AntigravityQuotaBody';
+ import { CLAUDE_CONFIG } from './claude/data';
+ import { ClaudeQuotaBody } from './claude/ClaudeQuotaBody';
++import { MIRASIM_CONFIG } from './mirasim/data';
++import { MirasimQuotaBody } from './mirasim/MirasimQuotaBody';
+ import { CODEX_CONFIG } from './codex/data';
+ import { CodexQuotaBody } from './codex/CodexQuotaBody';
+ import { KIMI_CONFIG } from './kimi/data';
+@@ -50,6 +52,7 @@ export const QUOTA_ADAPTERS: Record<QuotaProviderType, QuotaAdapter> = {
+     Body: AntigravityQuotaBody,
+   } as unknown as QuotaAdapter,
+   claude: { ...CLAUDE_CONFIG, Body: ClaudeQuotaBody } as unknown as QuotaAdapter,
++  mirasim: { ...MIRASIM_CONFIG, Body: MirasimQuotaBody } as unknown as QuotaAdapter,
+   codex: { ...CODEX_CONFIG, Body: CodexQuotaBody } as unknown as QuotaAdapter,
+   kimi: { ...KIMI_CONFIG, Body: KimiQuotaBody } as unknown as QuotaAdapter,
+   xai: { ...XAI_CONFIG, Body: XaiQuotaBody } as unknown as QuotaAdapter,
+diff --git a/src/features/quota/providers/mirasim/MirasimQuotaBody.tsx b/src/features/quota/providers/mirasim/MirasimQuotaBody.tsx
+new file mode 100644
+index 0000000..d437988
+--- /dev/null
++++ b/src/features/quota/providers/mirasim/MirasimQuotaBody.tsx
+@@ -0,0 +1,61 @@
++import { useMemo } from 'react';
++import { useTranslation } from 'react-i18next';
++import type { MirasimQuotaState } from '@/types';
++import { buildResetDisplay } from '@/utils/quota';
++import { useNow } from '@/hooks/useNow';
++import { QuotaMeter } from '../../components/QuotaMeter';
++import { QuotaResetLabel } from '../../components/QuotaResetLabel';
++import { collectQuotaRowInstants, pickUrgentRowId } from '../../resetSchedule';
++import type { QuotaBodyProps } from '../../types';
++
++export function MirasimQuotaBody({ quota, classes }: QuotaBodyProps<MirasimQuotaState>) {
++  const { t, i18n } = useTranslation();
++  const now = useNow();
++  const soonestRowId = useMemo(
++    () => pickUrgentRowId(collectQuotaRowInstants('mirasim', quota), now),
++    [quota, now]
++  );
++  const windows = quota.windows ?? [];
++
++  if (windows.length === 0) {
++    return <div className={classes.quotaMessage}>{t('mirasim_quota.empty_windows')}</div>;
++  }
++
++  return (
++    <>
++      {windows.map((window, index) => {
++        const used = window.usedPercent;
++        const remaining = used === null ? null : Math.max(0, Math.min(100, 100 - used));
++        const resetDisplay = buildResetDisplay(
++          window.resetLabel,
++          window.resetAtMs,
++          now,
++          i18n.resolvedLanguage
++        );
++        const soon = window.id === soonestRowId;
++        return (
++          <div
++            key={window.id}
++            className={classes.quotaRow}
++            title={soon ? t('quota_management.soonest_row_hint') : undefined}
++          >
++            <div className={classes.quotaRowHeader}>
++              <span className={classes.quotaModel}>
++                {window.labelKey ? t(window.labelKey) : window.label}
++              </span>
++              <div className={classes.quotaMeta}>
++                <span className={classes.quotaPercent}>
++                  {remaining === null ? '--' : `${Math.round(remaining)}%`}
++                </span>
++                {resetDisplay && (
++                  <QuotaResetLabel display={resetDisplay} classes={classes} soon={soon} />
++                )}
++              </div>
++            </div>
++            <QuotaMeter percent={remaining} classes={classes} index={index} />
++          </div>
++        );
++      })}
++    </>
++  );
++}
+diff --git a/src/features/quota/providers/mirasim/data.ts b/src/features/quota/providers/mirasim/data.ts
+new file mode 100644
+index 0000000..a4f9462
+--- /dev/null
++++ b/src/features/quota/providers/mirasim/data.ts
+@@ -0,0 +1,130 @@
++import type { TFunction } from 'i18next';
++import type { AuthFileItem, MirasimQuotaState, MirasimQuotaWindow } from '@/types';
++import { apiClient } from '@/services/api';
++import { isDisabledAuthFile, isMirasimFile } from '@/utils/quota';
++import { normalizeAuthIndex } from '@/utils/authIndex';
++import type { QuotaProviderData } from '../types';
++
++interface MirasimQuotaWindowPayload {
++  utilization?: unknown;
++  reset?: unknown;
++  reset_at?: unknown;
++}
++
++export interface MirasimQuotaResponse {
++  model_count?: unknown;
++  quota?: {
++    available?: unknown;
++    observed_at?: unknown;
++    five_hour?: MirasimQuotaWindowPayload | null;
++    seven_day?: MirasimQuotaWindowPayload | null;
++  } | null;
++}
++
++export interface MirasimQuotaData {
++  windows: MirasimQuotaWindow[];
++  observedAt: string | null;
++  modelCount: number | null;
++}
++
++const normalizeText = (value: unknown): string =>
++  typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim();
++
++/** Mirasim's unified utilization headers are ratios; tolerate percent-form values too. */
++export const normalizeMirasimUtilization = (value: unknown): number | null => {
++  const text = normalizeText(value);
++  if (!text) return null;
++  const percentForm = text.endsWith('%');
++  const parsed = Number.parseFloat(percentForm ? text.slice(0, -1) : text);
++  if (!Number.isFinite(parsed) || parsed < 0) return null;
++  const percent = percentForm || parsed > 1 ? parsed : parsed * 100;
++  return percent <= 100 ? percent : null;
++};
++
++const resolveResetAtMs = (window: MirasimQuotaWindowPayload | null | undefined): number | null => {
++  if (!window) return null;
++  const resetAt = normalizeText(window.reset_at);
++  if (resetAt) {
++    const parsed = Date.parse(resetAt);
++    if (Number.isFinite(parsed)) return parsed;
++  }
++  const rawReset = normalizeText(window.reset);
++  if (!rawReset) return null;
++  const epoch = Number(rawReset);
++  if (!Number.isFinite(epoch) || epoch <= 0) return null;
++  return epoch < 1_000_000_000_000 ? epoch * 1000 : epoch;
++};
++
++const buildWindow = (
++  id: string,
++  labelKey: string,
++  periodHours: number,
++  window: MirasimQuotaWindowPayload | null | undefined,
++  t: TFunction
++): MirasimQuotaWindow | null => {
++  if (!window) return null;
++  const usedPercent = normalizeMirasimUtilization(window.utilization);
++  const resetAtMs = resolveResetAtMs(window);
++  if (usedPercent === null && resetAtMs === null) return null;
++  return {
++    id,
++    label: t(labelKey),
++    labelKey,
++    usedPercent,
++    resetLabel: resetAtMs === null ? '' : new Date(resetAtMs).toISOString(),
++    resetAtMs,
++    periodHours,
++  };
++};
++
++export const buildMirasimQuotaWindows = (
++  payload: MirasimQuotaResponse,
++  t: TFunction
++): MirasimQuotaWindow[] => {
++  const quota = payload.quota;
++  if (!quota || quota.available === false) return [];
++  return [
++    buildWindow('five-hour', 'mirasim_quota.five_hour', 5, quota.five_hour, t),
++    buildWindow('seven-day', 'mirasim_quota.seven_day', 168, quota.seven_day, t),
++  ].filter((window): window is MirasimQuotaWindow => window !== null);
++};
++
++const fetchMirasimQuota = async (
++  file: AuthFileItem,
++  t: TFunction
++): Promise<MirasimQuotaData> => {
++  const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
++  if (!authIndex) throw new Error(t('mirasim_quota.missing_auth_index'));
++
++  const payload = await apiClient.get<MirasimQuotaResponse>('/mirasim/quota', {
++    params: { auth_index: authIndex },
++  });
++  const modelCount = Number(payload.model_count);
++  return {
++    windows: buildMirasimQuotaWindows(payload, t),
++    observedAt: normalizeText(payload.quota?.observed_at) || null,
++    modelCount: Number.isFinite(modelCount) && modelCount >= 0 ? modelCount : null,
++  };
++};
++
++export const MIRASIM_CONFIG: QuotaProviderData<MirasimQuotaState, MirasimQuotaData> = {
++  type: 'mirasim',
++  i18nPrefix: 'mirasim_quota',
++  filterFn: (file) => isMirasimFile(file) && !isDisabledAuthFile(file),
++  fetchQuota: fetchMirasimQuota,
++  storeSelector: (state) => state.mirasimQuota,
++  storeSetter: 'setMirasimQuota',
++  buildLoadingState: () => ({ status: 'loading', windows: [] }),
++  buildSuccessState: (data) => ({
++    status: 'success',
++    windows: data.windows,
++    observedAt: data.observedAt,
++    modelCount: data.modelCount,
++  }),
++  buildErrorState: (message, status) => ({
++    status: 'error',
++    windows: [],
++    error: message,
++    errorStatus: status,
++  }),
++};
+diff --git a/src/features/quota/providers/types.ts b/src/features/quota/providers/types.ts
+index 2ef0270..b73e75e 100644
+--- a/src/features/quota/providers/types.ts
++++ b/src/features/quota/providers/types.ts
+@@ -12,22 +12,31 @@ import type {
+   ClaudeQuotaState,
+   CodexQuotaState,
+   KimiQuotaState,
++  MirasimQuotaState,
+   XaiQuotaState,
+ } from '@/types';
+ 
+ export type QuotaUpdater<T> = T | ((prev: T) => T);
+ 
+-export type QuotaProviderType = 'antigravity' | 'claude' | 'codex' | 'kimi' | 'xai';
++export type QuotaProviderType =
++  | 'antigravity'
++  | 'claude'
++  | 'mirasim'
++  | 'codex'
++  | 'kimi'
++  | 'xai';
+ 
+ /** useQuotaStore 的结构契约（storeSelector/storeSetter 依赖）。 */
+ export interface QuotaStore {
+   antigravityQuota: Record<string, AntigravityQuotaState>;
+   claudeQuota: Record<string, ClaudeQuotaState>;
++  mirasimQuota: Record<string, MirasimQuotaState>;
+   codexQuota: Record<string, CodexQuotaState>;
+   kimiQuota: Record<string, KimiQuotaState>;
+   xaiQuota: Record<string, XaiQuotaState>;
+   setAntigravityQuota: (updater: QuotaUpdater<Record<string, AntigravityQuotaState>>) => void;
+   setClaudeQuota: (updater: QuotaUpdater<Record<string, ClaudeQuotaState>>) => void;
++  setMirasimQuota: (updater: QuotaUpdater<Record<string, MirasimQuotaState>>) => void;
+   setCodexQuota: (updater: QuotaUpdater<Record<string, CodexQuotaState>>) => void;
+   setKimiQuota: (updater: QuotaUpdater<Record<string, KimiQuotaState>>) => void;
+   setXaiQuota: (updater: QuotaUpdater<Record<string, XaiQuotaState>>) => void;
+diff --git a/src/features/quota/quotaTimelineModel.ts b/src/features/quota/quotaTimelineModel.ts
+index c9012a7..c72f1b5 100644
+--- a/src/features/quota/quotaTimelineModel.ts
++++ b/src/features/quota/quotaTimelineModel.ts
+@@ -349,7 +349,7 @@ export function buildTimelineLane(input: TimelineLaneInput): TimelineLane {
+ 
+   if (!quota || quota.status !== 'success') return empty;
+ 
+-  if (provider === 'claude' || provider === 'codex') {
++  if (provider === 'claude' || provider === 'mirasim' || provider === 'codex') {
+     const windows = ((quota as { windows?: WindowLike[] }).windows ?? []).filter(
+       (window) => typeof window.resetAtMs === 'number'
+     );
+diff --git a/src/features/quota/resetSchedule.ts b/src/features/quota/resetSchedule.ts
+index abdb7e1..0f1d1e0 100644
+--- a/src/features/quota/resetSchedule.ts
++++ b/src/features/quota/resetSchedule.ts
+@@ -90,7 +90,7 @@ export function collectQuotaRowInstants(
+   const state = quota as { status?: string } | undefined;
+   if (!state || state.status !== 'success') return [];
+ 
+-  if (provider === 'claude' || provider === 'codex') {
++  if (provider === 'claude' || provider === 'mirasim' || provider === 'codex') {
+     const windows = collectRows((quota as { windows?: WindowLike[] }).windows ?? [], 'window');
+     if (provider !== 'codex') return windows;
+ 
+diff --git a/src/i18n/locales/en.json b/src/i18n/locales/en.json
+index 623ed5e..a39787f 100644
+--- a/src/i18n/locales/en.json
++++ b/src/i18n/locales/en.json
+@@ -292,6 +292,7 @@
+     "filter_kimi": "Kimi",
+     "filter_aistudio": "AIStudio",
+     "filter_claude": "Claude",
++    "filter_mirasim": "Mirasim",
+     "filter_codex": "Codex",
+     "filter_antigravity": "Antigravity",
+     "filter_xai": "xAI",
+@@ -432,6 +433,18 @@
+     "plan_max20": "Max 20x",
+     "plan_team": "Team"
+   },
++  "mirasim_quota": {
++    "title": "Mirasim Quota",
++    "empty_title": "No Mirasim Credentials",
++    "empty_desc": "Load a Mirasim credential to view its rate-limit signals.",
++    "idle": "Click here to refresh quota",
++    "loading": "Loading quota...",
++    "load_failed": "Failed to load quota: {{message}}",
++    "missing_auth_index": "Auth file missing auth_index",
++    "empty_windows": "Mirasim did not return quota signals",
++    "five_hour": "5-hour limit",
++    "seven_day": "7-day limit"
++  },
+   "codex_quota": {
+     "title": "Codex Quota",
+     "empty_title": "No Codex Auth Files",
+diff --git a/src/i18n/locales/ru.json b/src/i18n/locales/ru.json
+index 70c7be1..15ed4d2 100644
+--- a/src/i18n/locales/ru.json
++++ b/src/i18n/locales/ru.json
+@@ -291,6 +291,7 @@
+     "filter_kimi": "Kimi",
+     "filter_aistudio": "AIStudio",
+     "filter_claude": "Claude",
++    "filter_mirasim": "Mirasim",
+     "filter_codex": "Codex",
+     "filter_antigravity": "Antigravity",
+     "filter_xai": "xAI",
+@@ -425,6 +426,18 @@
+     "plan_max20": "Max 20x",
+     "plan_team": "Team"
+   },
++  "mirasim_quota": {
++    "title": "Квота Mirasim",
++    "empty_title": "Учётные данные Mirasim отсутствуют",
++    "empty_desc": "Загрузите учётные данные Mirasim, чтобы увидеть сигналы лимита.",
++    "idle": "Нажмите здесь, чтобы обновить квоту",
++    "loading": "Загрузка квоты...",
++    "load_failed": "Не удалось загрузить квоту: {{message}}",
++    "missing_auth_index": "В файле авторизации отсутствует auth_index",
++    "empty_windows": "Mirasim не вернул сигналы квоты",
++    "five_hour": "Лимит на 5 часов",
++    "seven_day": "Лимит на 7 дней"
++  },
+   "codex_quota": {
+     "title": "Квота Codex",
+     "empty_title": "Файлы авторизации Codex отсутствуют",
+diff --git a/src/i18n/locales/zh-CN.json b/src/i18n/locales/zh-CN.json
+index 025b8ef..a515670 100644
+--- a/src/i18n/locales/zh-CN.json
++++ b/src/i18n/locales/zh-CN.json
+@@ -292,6 +292,7 @@
+     "filter_kimi": "Kimi",
+     "filter_aistudio": "AIStudio",
+     "filter_claude": "Claude",
++    "filter_mirasim": "Mirasim",
+     "filter_codex": "Codex",
+     "filter_antigravity": "Antigravity",
+     "filter_xai": "xAI",
+@@ -432,6 +433,18 @@
+     "plan_max20": "Max 20x",
+     "plan_team": "团队版"
+   },
++  "mirasim_quota": {
++    "title": "Mirasim 配额",
++    "empty_title": "暂无 Mirasim 认证",
++    "empty_desc": "加载 Mirasim 认证后即可查看限额信号。",
++    "idle": "点击此处刷新额度",
++    "loading": "正在加载额度...",
++    "load_failed": "额度获取失败：{{message}}",
++    "missing_auth_index": "认证文件缺少 auth_index",
++    "empty_windows": "Mirasim 未返回限额信号",
++    "five_hour": "5 小时限额",
++    "seven_day": "7 天限额"
++  },
+   "codex_quota": {
+     "title": "Codex 额度",
+     "empty_title": "暂无 Codex 认证",
+diff --git a/src/i18n/locales/zh-TW.json b/src/i18n/locales/zh-TW.json
+index bc3a705..d5920af 100644
+--- a/src/i18n/locales/zh-TW.json
++++ b/src/i18n/locales/zh-TW.json
+@@ -292,6 +292,7 @@
+     "filter_kimi": "Kimi",
+     "filter_aistudio": "AIStudio",
+     "filter_claude": "Claude",
++    "filter_mirasim": "Mirasim",
+     "filter_codex": "Codex",
+     "filter_antigravity": "Antigravity",
+     "filter_xai": "xAI",
+@@ -432,6 +433,18 @@
+     "plan_max20": "Max 20x",
+     "plan_team": "團隊版"
+   },
++  "mirasim_quota": {
++    "title": "Mirasim 配額",
++    "empty_title": "暫無 Mirasim 驗證",
++    "empty_desc": "載入 Mirasim 驗證後即可查看限額訊號。",
++    "idle": "點擊此處重新整理配額",
++    "loading": "正在載入配額...",
++    "load_failed": "配額取得失敗：{{message}}",
++    "missing_auth_index": "驗證檔案缺少 auth_index",
++    "empty_windows": "Mirasim 未回傳限額訊號",
++    "five_hour": "5 小時限額",
++    "seven_day": "7 天限額"
++  },
+   "codex_quota": {
+     "title": "Codex 配額",
+     "empty_title": "暫無 Codex 驗證",
+diff --git a/src/stores/useQuotaStore.ts b/src/stores/useQuotaStore.ts
+index 5072099..2edec02 100644
+--- a/src/stores/useQuotaStore.ts
++++ b/src/stores/useQuotaStore.ts
+@@ -8,6 +8,7 @@ import type {
+   ClaudeQuotaState,
+   CodexQuotaState,
+   KimiQuotaState,
++  MirasimQuotaState,
+   XaiQuotaState,
+ } from '@/types';
+ 
+@@ -17,11 +18,13 @@ interface QuotaStoreState {
+   cacheGeneration: number;
+   antigravityQuota: Record<string, AntigravityQuotaState>;
+   claudeQuota: Record<string, ClaudeQuotaState>;
++  mirasimQuota: Record<string, MirasimQuotaState>;
+   codexQuota: Record<string, CodexQuotaState>;
+   kimiQuota: Record<string, KimiQuotaState>;
+   xaiQuota: Record<string, XaiQuotaState>;
+   setAntigravityQuota: (updater: QuotaUpdater<Record<string, AntigravityQuotaState>>) => void;
+   setClaudeQuota: (updater: QuotaUpdater<Record<string, ClaudeQuotaState>>) => void;
++  setMirasimQuota: (updater: QuotaUpdater<Record<string, MirasimQuotaState>>) => void;
+   setCodexQuota: (updater: QuotaUpdater<Record<string, CodexQuotaState>>) => void;
+   setKimiQuota: (updater: QuotaUpdater<Record<string, KimiQuotaState>>) => void;
+   setXaiQuota: (updater: QuotaUpdater<Record<string, XaiQuotaState>>) => void;
+@@ -39,6 +42,7 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
+   cacheGeneration: 0,
+   antigravityQuota: {},
+   claudeQuota: {},
++  mirasimQuota: {},
+   codexQuota: {},
+   kimiQuota: {},
+   xaiQuota: {},
+@@ -50,6 +54,10 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
+     set((state) => ({
+       claudeQuota: resolveUpdater(updater, state.claudeQuota),
+     })),
++  setMirasimQuota: (updater) =>
++    set((state) => ({
++      mirasimQuota: resolveUpdater(updater, state.mirasimQuota),
++    })),
+   setCodexQuota: (updater) =>
+     set((state) => ({
+       codexQuota: resolveUpdater(updater, state.codexQuota),
+@@ -67,6 +75,7 @@ export const useQuotaStore = create<QuotaStoreState>((set) => ({
+       cacheGeneration: state.cacheGeneration + 1,
+       antigravityQuota: {},
+       claudeQuota: {},
++      mirasimQuota: {},
+       codexQuota: {},
+       kimiQuota: {},
+       xaiQuota: {},
+diff --git a/src/types/authFile.ts b/src/types/authFile.ts
+index a4c4c58..818947b 100644
+--- a/src/types/authFile.ts
++++ b/src/types/authFile.ts
+@@ -11,6 +11,7 @@ export type AuthFileType =
+   | 'gemini'
+   | 'aistudio'
+   | 'claude'
++  | 'mirasim'
+   | 'codex'
+   | 'antigravity'
+   | 'xai'
+diff --git a/src/types/quota.ts b/src/types/quota.ts
+index 8472879..46a19cf 100644
+--- a/src/types/quota.ts
++++ b/src/types/quota.ts
+@@ -175,6 +175,25 @@ export interface ClaudeQuotaState {
+   errorStatus?: number;
+ }
+ 
++export interface MirasimQuotaWindow {
++  id: string;
++  label: string;
++  labelKey?: string;
++  usedPercent: number | null;
++  resetLabel: string;
++  resetAtMs?: number | null;
++  periodHours?: number | null;
++}
++
++export interface MirasimQuotaState {
++  status: 'idle' | 'loading' | 'success' | 'error';
++  windows: MirasimQuotaWindow[];
++  observedAt?: string | null;
++  modelCount?: number | null;
++  error?: string;
++  errorStatus?: number;
++}
++
+ // Quota state types
+ export interface AntigravityQuotaGroup {
+   id: string;
+diff --git a/src/utils/quota/validators.ts b/src/utils/quota/validators.ts
+index b59e6c9..7c224ab 100644
+--- a/src/utils/quota/validators.ts
++++ b/src/utils/quota/validators.ts
+@@ -19,6 +19,10 @@ export function isClaudeFile(file: AuthFileItem): boolean {
+   return resolveAuthProvider(file) === 'claude';
+ }
+ 
++export function isMirasimFile(file: AuthFileItem): boolean {
++  return resolveAuthProvider(file) === 'mirasim';
++}
++
+ export function isCodexFile(file: AuthFileItem): boolean {
+   return resolveAuthProvider(file) === 'codex';
+ }
+diff --git a/tests/mirasimQuota.test.ts b/tests/mirasimQuota.test.ts
+new file mode 100644
+index 0000000..88fc704
+--- /dev/null
++++ b/tests/mirasimQuota.test.ts
+@@ -0,0 +1,58 @@
++import { describe, expect, test } from 'bun:test';
++import type { TFunction } from 'i18next';
++import {
++  buildMirasimQuotaWindows,
++  normalizeMirasimUtilization,
++} from '@/features/quota/providers/mirasim/data';
++
++const t = ((key: string) => key) as TFunction;
++
++describe('Mirasim quota adapter', () => {
++  test('normalizes ratio, percent, and percent-sign utilization values', () => {
++    expect(normalizeMirasimUtilization('0.25')).toBe(25);
++    expect(normalizeMirasimUtilization('25')).toBe(25);
++    expect(normalizeMirasimUtilization('25%')).toBe(25);
++    expect(normalizeMirasimUtilization('invalid')).toBeNull();
++    expect(normalizeMirasimUtilization('101')).toBeNull();
++  });
++
++  test('builds five-hour and seven-day windows from the plugin response', () => {
++    const fiveHourReset = '2026-09-01T09:00:00Z';
++    const sevenDayResetSeconds = 1_788_431_522;
++    expect(
++      buildMirasimQuotaWindows(
++        {
++          quota: {
++            available: true,
++            five_hour: { utilization: '0.25', reset_at: fiveHourReset },
++            seven_day: { utilization: '50%', reset: String(sevenDayResetSeconds) },
++          },
++        },
++        t
++      )
++    ).toEqual([
++      {
++        id: 'five-hour',
++        label: 'mirasim_quota.five_hour',
++        labelKey: 'mirasim_quota.five_hour',
++        usedPercent: 25,
++        resetLabel: new Date(fiveHourReset).toISOString(),
++        resetAtMs: Date.parse(fiveHourReset),
++        periodHours: 5,
++      },
++      {
++        id: 'seven-day',
++        label: 'mirasim_quota.seven_day',
++        labelKey: 'mirasim_quota.seven_day',
++        usedPercent: 50,
++        resetLabel: new Date(sevenDayResetSeconds * 1000).toISOString(),
++        resetAtMs: sevenDayResetSeconds * 1000,
++        periodHours: 168,
++      },
++    ]);
++  });
++
++  test('does not fabricate windows when the fresh response has no signals', () => {
++    expect(buildMirasimQuotaWindows({ quota: { available: false } }, t)).toEqual([]);
++  });
++});
+diff --git a/tests/quotaPageLogic.test.ts b/tests/quotaPageLogic.test.ts
+index 2592bbc..5a8b9e5 100644
+--- a/tests/quotaPageLogic.test.ts
++++ b/tests/quotaPageLogic.test.ts
+@@ -18,6 +18,7 @@ const file = (name: string, provider: string, extra: Partial<AuthFileItem> = {})
+ const FILES: AuthFileItem[] = [
+   file('codex-a.json', 'codex'),
+   file('claude-a.json', 'claude'),
++  file('mirasim-a.json', 'mirasim'),
+   file('kimi-a.json', 'kimi'),
+   file('codex-b.json', 'codex'),
+   file('grok-a.json', 'grok'), // 别名归一到 xai
+@@ -29,6 +30,7 @@ describe('resolveQuotaProviderType', () => {
+   test('maps provider aliases and rejects unsupported or disabled files', () => {
+     expect(resolveQuotaProviderType(file('a', 'grok'))).toBe('xai');
+     expect(resolveQuotaProviderType(file('a', 'antigravity'))).toBe('antigravity');
++    expect(resolveQuotaProviderType(file('a', 'mirasim'))).toBe('mirasim');
+     expect(resolveQuotaProviderType(file('a', 'gemini'))).toBeNull();
+     expect(resolveQuotaProviderType(file('a', 'claude', { disabled: true }))).toBeNull();
+   });
+@@ -39,20 +41,28 @@ describe('classifyQuotaFiles', () => {
+     const entries = classifyQuotaFiles(FILES);
+     expect(entries.map((entry) => entry.file.name)).not.toContain('gemini-a.json');
+     expect(entries.map((entry) => entry.file.name)).not.toContain('claude-off.json');
+-    expect(entries).toHaveLength(5);
++    expect(entries).toHaveLength(6);
+   });
+ 
+   test('orders entries by provider tab order', () => {
+     const entries = classifyQuotaFiles(FILES);
+-    expect(entries.map((entry) => entry.type)).toEqual(['claude', 'codex', 'codex', 'xai', 'kimi']);
++    expect(entries.map((entry) => entry.type)).toEqual([
++      'claude',
++      'mirasim',
++      'codex',
++      'codex',
++      'xai',
++      'kimi',
++    ]);
+   });
+ });
+ 
+ describe('buildTabCounts', () => {
+   test('counts per provider plus an all total, zero-filling empty tabs', () => {
+     expect(buildTabCounts(classifyQuotaFiles(FILES))).toEqual({
+-      all: 5,
++      all: 6,
+       claude: 1,
++      mirasim: 1,
+       antigravity: 0,
+       codex: 2,
+       xai: 1,
+@@ -65,7 +75,7 @@ describe('filterEntriesByTab', () => {
+   const entries = classifyQuotaFiles(FILES);
+ 
+   test("passes everything through on the 'all' tab", () => {
+-    expect(filterEntriesByTab(entries, 'all')).toHaveLength(5);
++    expect(filterEntriesByTab(entries, 'all')).toHaveLength(6);
+   });
+ 
+   test('filters to a single provider', () => {
+@@ -132,6 +142,7 @@ describe('sortQuotaEntries', () => {
+       resolver({
+         'codex-a.json': 300,
+         'claude-a.json': 100,
++        'mirasim-a.json': 150,
+         'kimi-a.json': 200,
+         'codex-b.json': 400,
+         'grok-a.json': 50,
+@@ -140,6 +151,7 @@ describe('sortQuotaEntries', () => {
+     expect(byName(sorted)).toEqual([
+       'grok-a.json',
+       'claude-a.json',
++      'mirasim-a.json',
+       'kimi-a.json',
+       'codex-a.json',
+       'codex-b.json',
+@@ -158,6 +170,7 @@ describe('sortQuotaEntries', () => {
+       'codex-b.json',
+       // unresolved tail, in the order classifyQuotaFiles produced
+       'claude-a.json',
++      'mirasim-a.json',
+       'codex-a.json',
+       'grok-a.json',
+     ]);
+diff --git a/tests/quotaResetSchedule.test.ts b/tests/quotaResetSchedule.test.ts
+index ba2cbca..0f23fdc 100644
+--- a/tests/quotaResetSchedule.test.ts
++++ b/tests/quotaResetSchedule.test.ts
+@@ -44,6 +44,13 @@ describe('collectQuotaRowInstants', () => {
+     ]);
+   });
+ 
++  test('collects Mirasim windows through the same rolling-window contract', () => {
++    expect(collectQuotaRowInstants('mirasim', claudeQuota)).toEqual([
++      { rowId: 'five_hour', atMs: NOW + 3 * HOUR_MS, kind: 'window' },
++      { rowId: 'seven_day', atMs: NOW + 4 * DAY_MS, kind: 'window' },
++    ]);
++  });
++
+   test('collects Codex windows and available reset credits together', () => {
+     const instants = collectQuotaRowInstants('codex', codexQuota);
+     expect(instants).toHaveLength(4);
+

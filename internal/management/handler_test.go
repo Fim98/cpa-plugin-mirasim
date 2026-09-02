@@ -15,8 +15,37 @@ type fakeHostServices struct {
 	files []pluginapi.HostAuthFileEntry
 }
 
+type fakeOAuthResources struct {
+	basePath string
+}
+
+func (f *fakeOAuthResources) ConfigureOAuthResourceBasePath(value string) { f.basePath = value }
+func (*fakeOAuthResources) HandleOAuthResource(context.Context, pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	return pluginapi.ManagementResponse{StatusCode: http.StatusTeapot}, nil
+}
+
 func (f fakeHostServices) ListAuth(context.Context) ([]pluginapi.HostAuthFileEntry, error) {
 	return f.files, nil
+}
+
+func TestRegisterManagementDeclaresOAuthResources(t *testing.T) {
+	oauth := &fakeOAuthResources{}
+	handler := New(pluginconfig.Defaults(), mirasim.NewPool(), oauth)
+	resp, errRegister := handler.RegisterManagement(context.Background(), pluginapi.ManagementRegistrationRequest{ResourceBasePath: "/v0/resource/plugins/mirasim"})
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	if oauth.basePath != "/v0/resource/plugins/mirasim" {
+		t.Fatalf("configured resource base = %q", oauth.basePath)
+	}
+	if len(resp.Resources) != 2 || resp.Resources[0].Path != "/oauth/start" || resp.Resources[1].Path != "/oauth/callback" {
+		t.Fatalf("resources = %#v", resp.Resources)
+	}
+	for _, resource := range resp.Resources {
+		if resource.Handler == nil {
+			t.Fatalf("resource handler is nil: %#v", resource)
+		}
+	}
 }
 
 func (fakeHostServices) GetAuth(context.Context, string) (pluginapi.HostAuthGetResponse, error) {

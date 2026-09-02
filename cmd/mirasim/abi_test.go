@@ -65,6 +65,9 @@ func TestABIRegisterAndManagementRoute(t *testing.T) {
 	if len(management.Routes) != 1 || management.Routes[0].Method != "GET" || management.Routes[0].Path != "/mirasim/quota" {
 		t.Fatalf("management routes = %#v", management.Routes)
 	}
+	if len(management.Resources) != 2 || management.Resources[0].Path != "/oauth/start" || management.Resources[1].Path != "/oauth/callback" {
+		t.Fatalf("management resources = %#v", management.Resources)
+	}
 }
 
 func TestABIUnknownMethodReturnsErrorEnvelope(t *testing.T) {

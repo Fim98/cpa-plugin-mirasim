@@ -23,16 +23,17 @@ type MirasimPlugin struct {
 func Build(configYAML []byte) pluginapi.Plugin {
 	settings := pluginconfig.Parse(configYAML)
 	pool := mirasim.NewPool()
+	authProvider := auth.New(settings, pool)
 	p := &MirasimPlugin{
-		auth:       auth.New(settings, pool),
+		auth:       authProvider,
 		models:     models.New(settings, pool),
 		executor:   executor.New(settings, pool),
-		management: management.New(settings, pool),
+		management: management.New(settings, pool, authProvider),
 	}
 	return pluginapi.Plugin{
 		Metadata: pluginapi.Metadata{
 			Name:             "Mirasim Provider",
-			Version:          "0.2.0",
+			Version:          "0.4.0",
 			Author:           "router-for-me",
 			GitHubRepository: "https://github.com/router-for-me/cpa-plugin-mirasim",
 			ConfigFields: []pluginapi.ConfigField{
@@ -40,6 +41,7 @@ func Build(configYAML []byte) pluginapi.Plugin {
 				{Name: "relay-url", Type: pluginapi.ConfigFieldTypeString, Description: "Mirasim relay base URL."},
 				{Name: "admin-url", Type: pluginapi.ConfigFieldTypeString, Description: "Mirasim authentication service base URL."},
 				{Name: "client-version", Type: pluginapi.ConfigFieldTypeString, Description: "Value sent in x-mirasim-client."},
+				{Name: "oauth-public-base-url", Type: pluginapi.ConfigFieldTypeString, Description: "Externally reachable CPA base URL for Mirasim OAuth callbacks."},
 			},
 		},
 		Capabilities: pluginapi.Capabilities{

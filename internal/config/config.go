@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	DefaultRelayURL      = "https://mirasim-relay.mirofish.ai"
-	DefaultAdminURL      = "https://admin.test.mirofish.ai"
-	DefaultClientVersion = "0.0.260"
+	DefaultRelayURL      = "https://relay.mirasim.ai"
+	DefaultAdminURL      = "https://auth.mirasim.ai"
+	DefaultClientVersion = "0.0.272"
 )
 
 // Settings contains provider defaults. Concrete auth files may override these
@@ -21,6 +21,9 @@ type Settings struct {
 	RelayURL      string `yaml:"relay-url"`
 	AdminURL      string `yaml:"admin-url"`
 	ClientVersion string `yaml:"client-version"`
+	// OAuthPublicBaseURL is the externally reachable CPA origin used for the
+	// browser callback. It is intentionally not persisted in auth records.
+	OAuthPublicBaseURL string `yaml:"oauth-public-base-url"`
 }
 
 type rootConfig struct {
@@ -29,8 +32,8 @@ type rootConfig struct {
 	} `yaml:"plugins"`
 }
 
-// Parse reads plugins.configs.mirasim without depending on CLIProxyAPI's
-// internal configuration package.
+// Parse accepts both CLIProxyAPI's runtime plugin subconfiguration and the
+// legacy full-config shape used by early tests and direct embedders.
 func Parse(raw []byte) Settings {
 	settings := Defaults()
 	if len(raw) == 0 {
@@ -42,8 +45,14 @@ func Parse(raw []byte) Settings {
 	}
 	configured, ok := root.Plugins.Configs["mirasim"]
 	if !ok {
-		return settings
+		if err := yaml.Unmarshal(raw, &configured); err != nil {
+			return settings
+		}
 	}
+	return merge(settings, configured)
+}
+
+func merge(settings, configured Settings) Settings {
 	if value := strings.TrimSpace(configured.CredentialDir); value != "" {
 		settings.CredentialDir = value
 	}
@@ -56,6 +65,9 @@ func Parse(raw []byte) Settings {
 	if value := strings.TrimSpace(configured.ClientVersion); value != "" {
 		settings.ClientVersion = value
 	}
+	if value := cleanURL(configured.OAuthPublicBaseURL); value != "" {
+		settings.OAuthPublicBaseURL = value
+	}
 	return settings
 }
 
@@ -66,10 +78,11 @@ func Defaults() Settings {
 		credentialDir = ".mirasim-credentials"
 	}
 	return Settings{
-		CredentialDir: credentialDir,
-		RelayURL:      firstNonEmpty(cleanURL(os.Getenv("MIRASIM_RELAY_URL")), DefaultRelayURL),
-		AdminURL:      firstNonEmpty(cleanURL(os.Getenv("MIRASIM_ADMIN_URL")), DefaultAdminURL),
-		ClientVersion: firstNonEmpty(strings.TrimSpace(os.Getenv("MIRASIM_CLIENT_VERSION")), DefaultClientVersion),
+		CredentialDir:      credentialDir,
+		RelayURL:           firstNonEmpty(cleanURL(os.Getenv("MIRASIM_RELAY_URL")), DefaultRelayURL),
+		AdminURL:           firstNonEmpty(cleanURL(os.Getenv("MIRASIM_ADMIN_URL")), DefaultAdminURL),
+		ClientVersion:      firstNonEmpty(strings.TrimSpace(os.Getenv("MIRASIM_CLIENT_VERSION")), DefaultClientVersion),
+		OAuthPublicBaseURL: cleanURL(os.Getenv("MIRASIM_OAUTH_PUBLIC_BASE_URL")),
 	}
 }
 
