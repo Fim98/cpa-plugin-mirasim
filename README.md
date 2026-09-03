@@ -101,8 +101,8 @@ The generated `.h` file is not needed by CLIProxyAPI. Tagged releases are built 
 Copy the platform library into CLIProxyAPI's plugin directory. Both unversioned and versioned names are supported, for example:
 
 - `plugins/mirasim.dll`
-- `plugins/mirasim-v0.7.0.dll`
-- `plugins/linux/amd64/mirasim-v0.7.0.so`
+- `plugins/mirasim-v0.7.1.dll`
+- `plugins/linux/amd64/mirasim-v0.7.1.so`
 
 Enable dynamic plugins and configure Mirasim in CLIProxyAPI's `config.yaml`:
 
@@ -136,7 +136,7 @@ Open the Mirasim OAuth action in Management Center. CPA calls `/v0/management/mi
 
 The generic CPA callback stores authorization codes only, so this plugin uses its own `/v0/resource/plugins/<plugin-id>/oauth/callback` resource for Mirasim's direct-token callback. No CLIProxyAPI core patch is required. The callback immediately redirects the browser to a token-free URL after accepting it.
 
-For a remote Docker installation, a public callback works only when the Mirasim authentication service has explicitly registered that URI. The current service otherwise accepts only loopback and `*.mirofish.ai` callbacks and returns `redirect_uri 不在白名单` before provider login. If you control that service, add the exact HTTPS callback to `OAUTH_REDIRECT_ALLOWLIST`.
+For a remote Docker installation, the current Mirasim service rejects an unregistered public callback with `redirect_uri 不在白名单` before provider login and accepts only loopback and `*.mirofish.ai` callbacks by default. It also omits the supplied OAuth `state` from its token callback. Consequently, an explicitly allowlisted public URI is usable only when the authentication service is also changed to echo state, or when a trusted intermediary restores the state bound to that login. The plugin deliberately does not accept an unbound state-less callback on its public fixed route.
 
 When the callback cannot be registered, build and run the loopback bridge on the same machine as the browser:
 
@@ -147,7 +147,7 @@ go build -o .\dist\mirasim-oauth-bridge.exe .\cmd\mirasim-oauth-bridge
   --upstream https://cpa.example.com
 ```
 
-Configure the remote plugin with `oauth-public-base-url: http://127.0.0.1:18317`, restart CPA, keep the bridge running, and start Mirasim login again from Management Center. The bridge accepts only the two Mirasim OAuth resource paths, strips caller credentials, records no callback data, and forwards the request to CPA over HTTPS. It is needed only during login; CPA still stores the resulting auth JSON in its configured `auth-dir`. See [ADR 0019](docs/decisions/0019-bridge-remote-oauth-through-loopback.md).
+Configure the remote plugin with `oauth-public-base-url: http://127.0.0.1:18317`, restart CPA, keep the bridge running, and start Mirasim login again from Management Center. The bridge accepts only the two Mirasim OAuth resource paths, strips caller credentials, and forwards the request to CPA over HTTPS. Because Mirasim 0.0.272 does not echo `state` in its token callback, the bridge retains only the most recently observed valid state for the same three-minute login window and restores it before forwarding the callback. It never stores credentials or logs callback requests. It is needed only during login; CPA still stores the resulting auth JSON in its configured `auth-dir`. See [ADR 0019](docs/decisions/0019-bridge-remote-oauth-through-loopback.md) and [ADR 0020](docs/decisions/0020-bind-state-less-oauth-callbacks.md).
 
 If the CPA container cannot connect to `auth.mirasim.ai`, configure CPA's top-level `proxy-url`. The plugin remembers that host proxy for private `/auth/me` and `/auth/refresh` calls while keeping bearer credentials outside CPA's request-recording bridge.
 

@@ -1,17 +1,20 @@
 package main
 
 import (
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestBridgeForwardsOnlyMirasimOAuthResources(t *testing.T) {
 	var calls atomic.Int32
 	var expectedHost string
+	state := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		calls.Add(1)
 		if req.Host != expectedHost {
@@ -22,8 +25,25 @@ func TestBridgeForwardsOnlyMirasimOAuthResources(t *testing.T) {
 				t.Errorf("%s was forwarded", name)
 			}
 		}
-		w.Header().Set("Location", "http://127.0.0.1:18317/v0/resource/plugins/mirasim/oauth/callback?result=complete")
-		w.WriteHeader(http.StatusFound)
+		switch req.URL.Path {
+		case defaultResourceBase + "/oauth/start":
+			if req.URL.Query().Get("state") != state {
+				t.Error("start request lost OAuth state")
+			}
+			w.WriteHeader(http.StatusOK)
+		case defaultResourceBase + "/oauth/callback":
+			if req.URL.Query().Get("state") != state {
+				t.Error("state-less callback was not bound to the pending loopback session")
+			}
+			if req.URL.Query().Get("access_token") != "secret" {
+				t.Error("callback lost access token")
+			}
+			w.Header().Set("Location", "http://127.0.0.1:18317/v0/resource/plugins/mirasim/oauth/callback?result=complete")
+			w.WriteHeader(http.StatusFound)
+		default:
+			t.Errorf("unexpected upstream path %q", req.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	defer upstream.Close()
 
@@ -41,7 +61,17 @@ func TestBridgeForwardsOnlyMirasimOAuthResources(t *testing.T) {
 
 	client := bridge.Client()
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	req, errRequest := http.NewRequest(http.MethodGet, bridge.URL+defaultResourceBase+"/oauth/callback?state=test&access_token=secret", nil)
+	startResp, errStart := client.Get(bridge.URL + defaultResourceBase + "/oauth/start?state=" + url.QueryEscape(state))
+	if errStart != nil {
+		t.Fatal(errStart)
+	}
+	_, _ = io.Copy(io.Discard, startResp.Body)
+	_ = startResp.Body.Close()
+	if startResp.StatusCode != http.StatusOK {
+		t.Fatalf("start status = %d", startResp.StatusCode)
+	}
+
+	req, errRequest := http.NewRequest(http.MethodGet, bridge.URL+defaultResourceBase+"/oauth/callback?access_token=secret&refresh_token=secret", nil)
 	if errRequest != nil {
 		t.Fatal(errRequest)
 	}
@@ -60,7 +90,7 @@ func TestBridgeForwardsOnlyMirasimOAuthResources(t *testing.T) {
 	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q", got)
 	}
-	if calls.Load() != 1 {
+	if calls.Load() != 2 {
 		t.Fatalf("upstream calls = %d", calls.Load())
 	}
 
@@ -83,8 +113,52 @@ func TestBridgeForwardsOnlyMirasimOAuthResources(t *testing.T) {
 			t.Errorf("%s %s status = %d, want %d", tc.method, tc.path, respDenied.StatusCode, tc.want)
 		}
 	}
-	if calls.Load() != 1 {
+	if calls.Load() != 2 {
 		t.Fatalf("denied requests reached upstream; calls = %d", calls.Load())
+	}
+}
+
+func TestBridgeRejectsStateLessCallbackWithoutPendingSession(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls.Add(1)
+	}))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
+	paths, _ := oauthResourcePaths(defaultResourceBase)
+	bridge := httptest.NewServer(newBridgeHandler(target, http.DefaultTransport, paths))
+	defer bridge.Close()
+
+	resp, errDo := bridge.Client().Get(bridge.URL + defaultResourceBase + "/oauth/callback?access_token=secret&refresh_token=secret")
+	if errDo != nil {
+		t.Fatal(errDo)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("unbound callback reached upstream")
+	}
+}
+
+func TestPendingOAuthStateExpiresAndClears(t *testing.T) {
+	now := time.Unix(1_788_422_225, 0)
+	pending := &pendingOAuthState{now: func() time.Time { return now }}
+	state := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	if !pending.remember(state) {
+		t.Fatal("valid state was rejected")
+	}
+	if got, ok := pending.current(); !ok || got != state {
+		t.Fatal("pending state was not retained")
+	}
+	pending.clear("different-state")
+	if _, ok := pending.current(); !ok {
+		t.Fatal("different state cleared the pending session")
+	}
+	now = now.Add(pendingStateTTL)
+	if _, ok := pending.current(); ok {
+		t.Fatal("expired state was retained")
 	}
 }
 
@@ -119,13 +193,11 @@ func TestOAuthResourcePaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{
-		"/gateway/v0/resource/plugins/mirasim/oauth/start",
-		"/gateway/v0/resource/plugins/mirasim/oauth/callback",
-	} {
-		if _, ok := paths[path]; !ok {
-			t.Errorf("missing path %q", path)
-		}
+	if paths.start != "/gateway/v0/resource/plugins/mirasim/oauth/start" {
+		t.Errorf("start path = %q", paths.start)
+	}
+	if paths.callback != "/gateway/v0/resource/plugins/mirasim/oauth/callback" {
+		t.Errorf("callback path = %q", paths.callback)
 	}
 	if _, errInvalid := oauthResourcePaths("../management"); errInvalid == nil {
 		t.Fatal("invalid resource base was accepted")

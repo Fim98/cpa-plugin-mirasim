@@ -46,6 +46,28 @@ func TestParseManualOAuthResultAcceptsCallbackURLAndRejectsMissingToken(t *testi
 	}
 }
 
+func TestLocalOAuthHandlerBindsMissingStateToRandomLoopbackPath(t *testing.T) {
+	results := make(chan localOAuthResult, 1)
+	handler := localOAuthHandler("/callback/random-path", "expected-state", results)
+	req := httptest.NewRequest(http.MethodGet, "/callback/random-path?access_token=access&refresh_token=refresh", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	result := <-results
+	if result.state != "expected-state" || result.accessToken != "access" || result.refreshToken != "refresh" {
+		t.Fatalf("result = %#v", result)
+	}
+
+	wrong := httptest.NewRequest(http.MethodGet, "/callback/random-path?state=wrong&access_token=access&refresh_token=refresh", nil)
+	wrongRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(wrongRecorder, wrong)
+	if wrongRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("wrong-state status = %d", wrongRecorder.Code)
+	}
+}
+
 func TestExecuteCommandLineIgnoresUntriggeredLogin(t *testing.T) {
 	provider := New(pluginconfig.Defaults(), mirasim.NewPool())
 	resp, errExecute := provider.ExecuteCommandLine(context.Background(), pluginapi.CommandLineExecutionRequest{})

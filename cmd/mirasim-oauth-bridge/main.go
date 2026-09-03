@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -21,7 +23,20 @@ import (
 const (
 	defaultListenAddress = "127.0.0.1:18317"
 	defaultResourceBase  = "/v0/resource/plugins/mirasim"
+	pendingStateTTL      = 3 * time.Minute
 )
+
+type oauthPaths struct {
+	start    string
+	callback string
+}
+
+type pendingOAuthState struct {
+	mu        sync.Mutex
+	value     string
+	expiresAt time.Time
+	now       func() time.Time
+}
 
 func main() {
 	listenAddress := flag.String("listen", defaultListenAddress, "loopback address used by the browser callback")
@@ -78,7 +93,8 @@ func main() {
 	}
 }
 
-func newBridgeHandler(target *url.URL, transport http.RoundTripper, allowedPaths map[string]struct{}) http.Handler {
+func newBridgeHandler(target *url.URL, transport http.RoundTripper, paths oauthPaths) http.Handler {
+	pending := &pendingOAuthState{now: time.Now}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	director := proxy.Director
 	proxy.Director = func(req *http.Request) {
@@ -111,12 +127,66 @@ func newBridgeHandler(target *url.URL, transport http.RoundTripper, allowedPaths
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if _, ok := allowedPaths[req.URL.Path]; !ok {
+		if req.URL.Path != paths.start && req.URL.Path != paths.callback {
 			http.NotFound(w, req)
 			return
 		}
+		if req.URL.Path == paths.start {
+			if !pending.remember(req.URL.Query().Get("state")) {
+				http.Error(w, "invalid or missing Mirasim OAuth state", http.StatusBadRequest)
+				return
+			}
+		}
+		if req.URL.Path == paths.callback {
+			query := req.URL.Query()
+			state := strings.TrimSpace(query.Get("state"))
+			if state == "" {
+				var ok bool
+				state, ok = pending.current()
+				if !ok {
+					http.Error(w, "Mirasim OAuth session is missing or expired; start login again", http.StatusBadRequest)
+					return
+				}
+				query.Set("state", state)
+				req.URL.RawQuery = query.Encode()
+			}
+			defer pending.clear(state)
+		}
 		proxy.ServeHTTP(w, req)
 	})
+}
+
+func (p *pendingOAuthState) remember(state string) bool {
+	state = strings.TrimSpace(state)
+	decoded, errDecode := base64.RawURLEncoding.DecodeString(state)
+	if errDecode != nil || len(decoded) < 16 || len(decoded) > 64 {
+		return false
+	}
+	p.mu.Lock()
+	p.value = state
+	p.expiresAt = p.now().Add(pendingStateTTL)
+	p.mu.Unlock()
+	return true
+}
+
+func (p *pendingOAuthState) current() (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.value == "" || !p.now().Before(p.expiresAt) {
+		p.value = ""
+		p.expiresAt = time.Time{}
+		return "", false
+	}
+	return p.value, true
+}
+
+func (p *pendingOAuthState) clear(state string) {
+	p.mu.Lock()
+	if p.value == strings.TrimSpace(state) {
+		p.value = ""
+		p.expiresAt = time.Time{}
+	}
+	p.mu.Unlock()
 }
 
 func validateListenAddress(value string) error {
@@ -152,14 +222,14 @@ func parseUpstream(value string) (*url.URL, error) {
 	return parsed, nil
 }
 
-func oauthResourcePaths(value string) (map[string]struct{}, error) {
+func oauthResourcePaths(value string) (oauthPaths, error) {
 	base := "/" + strings.Trim(strings.TrimSpace(value), "/")
 	if base == "/" || strings.Contains(base, "..") || strings.ContainsAny(base, "?#") {
-		return nil, fmt.Errorf("invalid Mirasim OAuth resource base path")
+		return oauthPaths{}, fmt.Errorf("invalid Mirasim OAuth resource base path")
 	}
-	return map[string]struct{}{
-		base + "/oauth/start":    {},
-		base + "/oauth/callback": {},
+	return oauthPaths{
+		start:    base + "/oauth/start",
+		callback: base + "/oauth/callback",
 	}, nil
 }
 

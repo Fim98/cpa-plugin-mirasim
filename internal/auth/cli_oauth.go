@@ -98,6 +98,11 @@ func (p *Provider) runLocalLogin(ctx context.Context, settings pluginconfig.Sett
 				return pluginapi.AuthData{}, nil, errParse
 			}
 			if okResult {
+				// Mirasim 0.0.272 omits state from its token callback. The
+				// interactive prompt is scoped to this one active CLI login, so
+				// bind a state-less pasted result to that invocation before the
+				// constant-time check in finishLocalLogin.
+				bindMissingOAuthState(&result, state)
 				return p.finishLocalLogin(ctx, settings, proxyURL, state, result)
 			}
 		case errRead := <-manualError:
@@ -137,6 +142,10 @@ func localOAuthHandler(callbackPath, expectedState string, results chan<- localO
 			return
 		}
 		result := oauthResultFromValues(r.URL.Query())
+		// The listener is loopback-only and callbackPath contains 144 bits
+		// of randomness. That exact one-use route is the channel binding when
+		// current Mirasim omits its separately supplied state parameter.
+		bindMissingOAuthState(&result, expectedState)
 		if !constantTimeEqual(expectedState, result.state) {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte("<html><body><h1>Invalid OAuth state</h1></body></html>"))
@@ -155,6 +164,12 @@ func localOAuthHandler(callbackPath, expectedState string, results chan<- localO
 		}
 	})
 	return mux
+}
+
+func bindMissingOAuthState(result *localOAuthResult, expectedState string) {
+	if result != nil && strings.TrimSpace(result.state) == "" {
+		result.state = strings.TrimSpace(expectedState)
+	}
 }
 
 func oauthResultFromValues(values url.Values) localOAuthResult {

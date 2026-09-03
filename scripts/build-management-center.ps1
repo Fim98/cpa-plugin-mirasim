@@ -90,7 +90,7 @@ try {
         if (-not $SkipTests) {
             Invoke-BunChecked 'test'
         }
-        $env:VERSION = 'mirasim-quota-0.7.0'
+        $env:VERSION = 'mirasim-quota-0.7.1'
         Invoke-BunChecked 'run' 'build'
     } finally {
         Pop-Location

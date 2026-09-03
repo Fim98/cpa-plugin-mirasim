@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-09-03
+Accepted — 2026-09-03. Its state-handling decision is extended by [ADR 0020](0020-bind-state-less-oauth-callbacks.md).
 
 Extends the browser OAuth design in [ADR 0005](0005-implement-mirasim-oauth-login.md).
 
@@ -16,17 +16,17 @@ The callback query contains bearer credentials. Any forwarding path must avoid r
 
 ## Decision
 
-1. Keep direct HTTPS callbacks supported for domains explicitly registered by the Mirasim authentication service.
+1. Keep direct HTTPS callbacks supported when the authentication service both registers the URI and echoes OAuth state, or when a trusted intermediary restores the state bound to that login.
 2. Ship `mirasim-oauth-bridge` for remote installations that do not have an allowlisted callback domain. It listens only on a loopback address and forwards only the plugin's exact `/oauth/start` and `/oauth/callback` resource paths to a configured CPA HTTPS origin.
-3. Strip authorization, API-key, cookie, proxy-authorization, and referrer headers before forwarding. Do not log requests, query strings, response bodies, or forwarding errors that could contain callback material.
+3. Strip authorization, API-key, cookie, proxy-authorization, and referrer headers before forwarding. Do not log requests, query strings, response bodies, or forwarding errors that could contain callback material. ADR 0020 adds an ephemeral non-secret state binding because the current upstream callback omits `state`.
 4. Configure the remote plugin's `oauth-public-base-url` to the bridge's local HTTP origin while the bridge is running on the same machine as the browser. Mirasim then sees the same class of loopback callback used by its official client, and the bridge carries that request to the original CPA process over HTTPS.
-5. Treat the bridge as a login-time helper only. CPA remains the OAuth session owner and persists the completed credential in its normal `auth-dir`; the bridge stores nothing.
+5. Treat the bridge as a login-time helper only. CPA remains the OAuth session owner and persists the completed credential in its normal `auth-dir`; the bridge stores no credentials.
 
 ## Consequences
 
 Remote Docker installations can complete OAuth without importing official-client credentials or asking Mirasim to whitelist a personal domain. The operator must run one small helper on the browser machine during login and select a free loopback port. Inference traffic never traverses the helper.
 
-An explicitly allowlisted public callback remains the simplest unattended option. The loopback bridge is intentionally not a general reverse proxy and cannot access Management API or inference routes.
+A public callback that is allowlisted and preserves OAuth state remains the simplest unattended option. The loopback bridge is intentionally not a general reverse proxy and cannot access Management API or inference routes.
 
 ## Alternatives considered
 
