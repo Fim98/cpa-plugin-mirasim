@@ -30,8 +30,8 @@ Mirasim does not currently expose a usable raw Chat Completions upstream. The pl
 | Request | Mirasim wire route |
 |---|---|
 | Any `claude-*` model | `POST /v1/messages` |
-| Any Claude-format client request | `POST /v1/messages` |
-| GPT model from OpenAI Chat, Responses, Gemini, or Codex format | `POST /v1/responses` using the Codex wire shape |
+| Any `gpt-*` model, including one selected through Claude Code | `POST /v1/responses` using the Codex wire shape |
+| An unknown model from a Claude-format client | `POST /v1/messages` |
 
 Codex Responses uses upstream SSE even for a non-streaming downstream request. For non-streaming callers, the plugin collects the terminal `response.completed` or `response.incomplete` event and returns one translated JSON response.
 

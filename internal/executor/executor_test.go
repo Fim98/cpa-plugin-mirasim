@@ -72,13 +72,13 @@ func TestBuildProviderRequestRoutesByModelAndClientProtocol(t *testing.T) {
 			wantStream: true,
 		},
 		{
-			name:       "Claude client to GPT stays Messages",
+			name:       "Claude client to GPT translates to Codex Responses",
 			model:      "gpt-5.6-sol",
 			format:     sdktranslator.FormatClaude,
 			payload:    `{"model":"gpt-5.6-sol","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`,
-			wantPath:   "/v1/messages",
-			wantFormat: sdktranslator.FormatClaude,
-			wantStream: false,
+			wantPath:   "/v1/responses",
+			wantFormat: sdktranslator.FormatCodex,
+			wantStream: true,
 		},
 		{
 			name:       "Claude model always uses Messages",

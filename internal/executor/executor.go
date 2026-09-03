@@ -215,7 +215,16 @@ func buildProviderRequest(req pluginapi.ExecutorRequest, stream bool) ([]byte, p
 }
 
 func selectWireFormat(model string, source sdktranslator.Format) sdktranslator.Format {
-	if strings.HasPrefix(strings.ToLower(normalizeModel(model)), "claude-") || source == sdktranslator.FormatClaude {
+	normalizedModel := strings.ToLower(normalizeModel(model))
+	if strings.HasPrefix(normalizedModel, "gpt-") {
+		return sdktranslator.FormatCodex
+	}
+	if strings.HasPrefix(normalizedModel, "claude-") {
+		return sdktranslator.FormatClaude
+	}
+	// Unknown model families retain the caller's native Claude shape. Published
+	// Mirasim models are family-prefixed and therefore take the branches above.
+	if source == sdktranslator.FormatClaude {
 		return sdktranslator.FormatClaude
 	}
 	return sdktranslator.FormatCodex

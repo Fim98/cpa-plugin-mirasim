@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-09-03
+Accepted — 2026-09-03; routing item 3 superseded by [ADR 0013](0013-route-published-models-by-family.md)
 
 Supersedes [ADR 0002](0002-publish-claude-only-model-catalog.md).
 
@@ -27,7 +27,7 @@ CLIProxyAPI `/v1/models` consumers and ordinary model selectors can now discover
 
 Static presence remains a startup fallback, not a promise of live capacity. Authenticated discovery uses the current Mirasim catalog, and an execution can still return a time-sensitive upstream capacity error.
 
-Claude-format clients that reject GPT model names locally cannot use those names merely because CPA publishes them. OpenAI Responses, Codex, Gemini, or OpenAI Chat clients can select the GPT entries, subject to their own model-name behavior.
+Claude-format clients that accept a GPT model name are translated to Codex Responses before the request reaches Mirasim. Clients that reject GPT names locally still cannot use those names merely because CPA publishes them.
 
 ## Alternatives considered
 
