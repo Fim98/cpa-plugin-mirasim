@@ -18,10 +18,11 @@ The first quota integration predated Mirasim's structured endpoint and inferred 
 4. On status 405 or 420, send the official minimal paid-model Messages probe and parse the four legacy unified rate-limit headers even when the probe itself is rate-limited.
 5. Keep the management response backward compatible by retaining the legacy `five_hour` and `seven_day` fields for fallback results, while adding a structured `windows` array.
 6. Update the companion Management Center patch to render arbitrary structured windows and retain the old fixed-window adapter as a fallback.
+7. Keep the Messages probe internal to quota compatibility. It is not a canonical Claude Code request, an inference health check, or a supported test of model/plugin availability.
 
 ## Consequences
 
-The quota card no longer depends on model discovery carrying rate-limit headers. New model-scoped or differently named windows appear without another backend schema change, and operators can inspect raw usage units as well as percentages. The fallback probe can make a minimal billable relay request only when the structured endpoint is unavailable; this matches Mirasim's official behavior.
+The quota card no longer depends on model discovery carrying rate-limit headers. New model-scoped or differently named windows appear without another backend schema change, and operators can inspect raw usage units as well as percentages. The fallback probe can make a minimal billable relay request only when the structured endpoint is unavailable; this matches Mirasim's official behavior. Its response must not be interpreted as proof for or against the real Claude Code execution path, which requires an end-to-end Claude Code request through CPA.
 
 ## Alternatives considered
 

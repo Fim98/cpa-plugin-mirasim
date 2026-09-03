@@ -44,6 +44,14 @@ Catalog presence is not proof that every model is currently routable. Relay capa
 
 Both model families are registered with CLIProxyAPI. Claude models use Messages; GPT models use the real Codex Responses request shape. The GPT publication decision supersedes the earlier Claude-only rollout boundary; see [ADR 0012](docs/decisions/0012-publish-claude-and-gpt-models.md).
 
+## Functional validation
+
+Do not use a hand-written minimal `POST /v1/messages` request as a functional or availability test for this plugin. In particular, a request that omits Claude Code's query parameters, headers, or complete body shape is not a canonical Claude Code request and is not a supported plugin test vector. Mirasim can reject such a reduced request with HTTP 400 while the real Claude Code path remains healthy.
+
+Validate Claude support end to end with an actual Claude Code client configured to use CPA, require a successful client result, and correlate that invocation with CPA's access log. The currently verified Claude Code route is `POST /v1/messages?beta=true`, but the complete request shape is the contract: merely appending `?beta=true` to a reduced request does not turn it into a valid Claude Code test. When a real-client failure occurs, retain the actual client error and corresponding CPA/plugin log before attempting to reduce the request.
+
+The signed one-token Messages request used by quota collection is a narrow exception. It is Mirasim's official compatibility fallback for reading legacy rate-limit response headers only when `GET /v1/limits` returns 405 or 420. It is not an inference health check and must not be reused to decide whether Claude Code, a model, or the plugin is available; see [ADR 0014](docs/decisions/0014-adopt-structured-mirasim-limits.md).
+
 ## Thinking controls
 
 CPA-style model suffixes are removed before the request reaches Mirasim. Examples include `gpt-5.6-sol(high)`, `gpt-5.6-terra(8192)`, `claude-sonnet-5(auto)`, and `claude-haiku-4-5(2048)`.
