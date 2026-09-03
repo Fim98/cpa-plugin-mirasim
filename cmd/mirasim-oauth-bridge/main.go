@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -41,6 +42,7 @@ type pendingOAuthState struct {
 func main() {
 	listenAddress := flag.String("listen", defaultListenAddress, "loopback address used by the browser callback")
 	upstreamRaw := flag.String("upstream", "", "public HTTPS origin of the remote CLIProxyAPI server")
+	dialAddressRaw := flag.String("dial-address", "", "optional literal IP:port used for direct upstream TCP connections")
 	resourceBase := flag.String("resource-base", defaultResourceBase, "Mirasim plugin resource base path")
 	flag.Parse()
 
@@ -55,12 +57,10 @@ func main() {
 	if errPaths != nil {
 		log.Fatal(errPaths)
 	}
-
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = http.ProxyFromEnvironment
-	transport.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
-	transport.TLSHandshakeTimeout = 10 * time.Second
-	transport.ResponseHeaderTimeout = 30 * time.Second
+	transport, dialAddress, errTransport := newBridgeTransport(*dialAddressRaw)
+	if errTransport != nil {
+		log.Fatal(errTransport)
+	}
 
 	server := &http.Server{
 		Addr:              *listenAddress,
@@ -78,6 +78,9 @@ func main() {
 	}
 	log.Printf("Mirasim OAuth bridge listening on http://%s", listener.Addr())
 	log.Printf("forwarding only Mirasim OAuth resources to %s", target.String())
+	if dialAddress != "" {
+		log.Printf("upstream TCP connections pinned to %s; TLS still verifies %s", dialAddress, target.Hostname())
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -91,6 +94,31 @@ func main() {
 	if errServe := server.Serve(listener); errServe != nil && !errors.Is(errServe, http.ErrServerClosed) {
 		log.Fatalf("serve OAuth bridge: %v", errServe)
 	}
+}
+
+func newBridgeTransport(dialAddressRaw string) (*http.Transport, string, error) {
+	dialAddress, errParse := parseDialAddress(dialAddressRaw)
+	if errParse != nil {
+		return nil, "", errParse
+	}
+
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = dialer.DialContext
+	transport.TLSHandshakeTimeout = 10 * time.Second
+	transport.ResponseHeaderTimeout = 30 * time.Second
+	if dialAddress == "" {
+		transport.Proxy = http.ProxyFromEnvironment
+		return transport, "", nil
+	}
+
+	// Keep the request URL and TLS server name unchanged. Only the socket
+	// destination is pinned, avoiding local FakeIP DNS without weakening TLS.
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, dialAddress)
+	}
+	return transport, dialAddress, nil
 }
 
 func newBridgeHandler(target *url.URL, transport http.RoundTripper, paths oauthPaths) http.Handler {
@@ -203,6 +231,23 @@ func validateListenAddress(value string) error {
 		return fmt.Errorf("OAuth bridge refuses non-loopback listen address %q", value)
 	}
 	return nil
+}
+
+func parseDialAddress(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	host, port, errSplit := net.SplitHostPort(value)
+	if errSplit != nil {
+		return "", fmt.Errorf("OAuth bridge dial address must be a literal IP and port")
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	portNumber, errPort := strconv.Atoi(port)
+	if ip == nil || errPort != nil || portNumber < 1 || portNumber > 65535 {
+		return "", fmt.Errorf("OAuth bridge dial address must be a literal IP and port")
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(portNumber)), nil
 }
 
 func parseUpstream(value string) (*url.URL, error) {

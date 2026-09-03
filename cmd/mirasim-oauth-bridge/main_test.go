@@ -175,6 +175,61 @@ func TestValidateListenAddress(t *testing.T) {
 	}
 }
 
+func TestParseDialAddress(t *testing.T) {
+	for input, want := range map[string]string{
+		"":                     "",
+		" 69.63.194.69:58317 ": "69.63.194.69:58317",
+		"[2001:db8::1]:443":    "[2001:db8::1]:443",
+	} {
+		got, err := parseDialAddress(input)
+		if err != nil {
+			t.Errorf("parseDialAddress(%q): %v", input, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("parseDialAddress(%q) = %q, want %q", input, got, want)
+		}
+	}
+	for _, input := range []string{"cpa.example:443", "69.63.194.69", "69.63.194.69:0", "69.63.194.69:65536"} {
+		if _, err := parseDialAddress(input); err == nil {
+			t.Errorf("parseDialAddress(%q) succeeded", input)
+		}
+	}
+}
+
+func TestPinnedTransportBypassesDNSWithoutChangingRequestHost(t *testing.T) {
+	requestHost := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requestHost <- req.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	upstreamURL, errParse := url.Parse(upstream.URL)
+	if errParse != nil {
+		t.Fatal(errParse)
+	}
+
+	transport, dialAddress, errTransport := newBridgeTransport(upstreamURL.Host)
+	if errTransport != nil {
+		t.Fatal(errTransport)
+	}
+	if dialAddress != upstreamURL.Host {
+		t.Fatalf("dial address = %q, want %q", dialAddress, upstreamURL.Host)
+	}
+	client := &http.Client{Transport: transport}
+	resp, errDo := client.Get("http://does-not-resolve.invalid/probe")
+	if errDo != nil {
+		t.Fatal(errDo)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if got := <-requestHost; got != "does-not-resolve.invalid" {
+		t.Fatalf("request Host = %q", got)
+	}
+}
+
 func TestParseUpstreamRequiresHTTPSOutsideLoopback(t *testing.T) {
 	for _, value := range []string{"https://cpa.example", "http://127.0.0.1:8317"} {
 		if _, err := parseUpstream(value); err != nil {

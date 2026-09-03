@@ -149,6 +149,17 @@ go build -o .\dist\mirasim-oauth-bridge.exe .\cmd\mirasim-oauth-bridge
 
 Configure the remote plugin with `oauth-public-base-url: http://127.0.0.1:18317`, restart CPA, keep the bridge running, and start Mirasim login again from Management Center. The bridge accepts only the two Mirasim OAuth resource paths, strips caller credentials, and forwards the request to CPA over HTTPS. Because Mirasim 0.0.272 does not echo `state` in its token callback, the bridge retains only the most recently observed valid state for the same three-minute login window and restores it before forwarding the callback. It never stores credentials or logs callback requests. It is needed only during login; CPA still stores the resulting auth JSON in its configured `auth-dir`. See [ADR 0019](docs/decisions/0019-bridge-remote-oauth-through-loopback.md) and [ADR 0020](docs/decisions/0020-bind-state-less-oauth-callbacks.md).
 
+If local DNS returns a transparent-proxy FakeIP that Go cannot reach, pin only the upstream socket destination while leaving the HTTPS URL unchanged:
+
+```powershell
+.\dist\mirasim-oauth-bridge.exe `
+  --listen 127.0.0.1:18317 `
+  --upstream https://cpa.example.com `
+  --dial-address 203.0.113.10:443
+```
+
+`--dial-address` accepts only a literal IP and port. It deliberately bypasses environment proxies, but TLS SNI and certificate verification still use the hostname from `--upstream`; it does not enable insecure TLS. Update the pinned address if the CPA endpoint moves. See [ADR 0021](docs/decisions/0021-pin-oauth-bridge-upstream-address.md).
+
 If the CPA container cannot connect to `auth.mirasim.ai`, configure CPA's top-level `proxy-url`. The plugin remembers that host proxy for private `/auth/me` and `/auth/refresh` calls while keeping bearer credentials outside CPA's request-recording bridge.
 
 ### Command line
