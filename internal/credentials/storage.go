@@ -1,6 +1,7 @@
 package credentials
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/x509"
@@ -18,12 +19,16 @@ import (
 
 const Provider = "mirasim"
 
+const opaqueAccessTokenLifetime = 30 * time.Minute
+
 // Storage is the provider-owned OAuth payload persisted by CLIProxyAPI in
 // auth-dir.
 type Storage struct {
 	Type             string         `json:"type"`
 	AccessToken      string         `json:"access_token,omitempty"`
 	RefreshToken     string         `json:"refresh_token,omitempty"`
+	Expired          string         `json:"expired,omitempty"`
+	LastRefresh      string         `json:"last_refresh,omitempty"`
 	DevicePrivateKey string         `json:"device_private_key,omitempty"`
 	RelayURL         string         `json:"relay_url,omitempty"`
 	AdminURL         string         `json:"admin_url,omitempty"`
@@ -70,6 +75,7 @@ func Parse(raw []byte, defaults pluginconfig.Settings) (*Storage, error) {
 		storage.ClientVersion = defaults.ClientVersion
 	}
 	storage.applyDefaults()
+	storage.ensureTokenTiming(time.Now())
 
 	if errValidate := storage.Validate(); errValidate != nil {
 		return nil, errValidate
@@ -81,6 +87,8 @@ func (s *Storage) applyDefaults() {
 	s.Type = Provider
 	s.AccessToken = strings.TrimSpace(s.AccessToken)
 	s.RefreshToken = strings.TrimSpace(s.RefreshToken)
+	s.Expired = normalizeTimestamp(s.Expired)
+	s.LastRefresh = normalizeTimestamp(s.LastRefresh)
 	s.DevicePrivateKey = strings.TrimSpace(s.DevicePrivateKey)
 	s.RelayURL = strings.TrimRight(strings.TrimSpace(s.RelayURL), "/")
 	s.AdminURL = strings.TrimRight(strings.TrimSpace(s.AdminURL), "/")
@@ -123,6 +131,8 @@ func (s Storage) JSON() []byte {
 	out["type"] = Provider
 	setOrDelete(out, "access_token", strings.TrimSpace(s.AccessToken))
 	setOrDelete(out, "refresh_token", strings.TrimSpace(s.RefreshToken))
+	setOrDelete(out, "expired", strings.TrimSpace(s.Expired))
+	setOrDelete(out, "last_refresh", strings.TrimSpace(s.LastRefresh))
 	setOrDelete(out, "device_private_key", strings.TrimSpace(s.DevicePrivateKey))
 	setOrDelete(out, "relay_url", strings.TrimSpace(s.RelayURL))
 	setOrDelete(out, "admin_url", strings.TrimSpace(s.AdminURL))
@@ -158,12 +168,102 @@ func (s Storage) AuthData(id, fileName string, nextRefresh time.Time) pluginapi.
 			"auth_kind":     "oauth",
 			"access_token":  strings.TrimSpace(s.AccessToken),
 			"refresh_token": strings.TrimSpace(s.RefreshToken),
+			"expired":       strings.TrimSpace(s.Expired),
+			"last_refresh":  strings.TrimSpace(s.LastRefresh),
 		},
 		Attributes: map[string]string{
 			"auth_kind": "oauth",
 		},
 		NextRefreshAfter: nextRefresh,
 	}
+}
+
+// RecordTokenTiming stores the conventional CPA OAuth timestamps after login
+// or refresh. A standard expires_in value wins, followed by JWT exp and a
+// conservative fallback for opaque access tokens.
+func (s *Storage) RecordTokenTiming(accessToken string, expiresIn int64, now time.Time) {
+	if s == nil {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	now = now.UTC()
+	s.Expired = ResolveAccessTokenExpiry(accessToken, expiresIn, now).Format(time.RFC3339)
+	s.LastRefresh = now.Format(time.RFC3339)
+}
+
+// AccessTokenExpiry returns the persisted expiry, or derives one for an older
+// auth record that predates explicit token timing.
+func (s Storage) AccessTokenExpiry(now time.Time) time.Time {
+	if parsed, ok := parseTimestamp(s.Expired); ok {
+		return parsed
+	}
+	return ResolveAccessTokenExpiry(s.AccessToken, 0, now)
+}
+
+// ResolveAccessTokenExpiry chooses an expiry without treating an opaque token
+// as immediately expired, which would otherwise cause a refresh loop.
+func ResolveAccessTokenExpiry(accessToken string, expiresIn int64, now time.Time) time.Time {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	now = now.UTC()
+	if expiresIn > 0 {
+		return now.Add(time.Duration(expiresIn) * time.Second)
+	}
+	if expiry := jwtExpiry(accessToken); !expiry.IsZero() {
+		return expiry.UTC()
+	}
+	return now.Add(opaqueAccessTokenLifetime)
+}
+
+func (s *Storage) ensureTokenTiming(now time.Time) {
+	if s == nil || strings.TrimSpace(s.AccessToken) == "" {
+		return
+	}
+	if _, ok := parseTimestamp(s.Expired); !ok {
+		s.Expired = ResolveAccessTokenExpiry(s.AccessToken, 0, now).Format(time.RFC3339)
+	}
+}
+
+func normalizeTimestamp(value string) string {
+	if parsed, ok := parseTimestamp(value); ok {
+		return parsed.Format(time.RFC3339)
+	}
+	return ""
+}
+
+func parseTimestamp(value string) (time.Time, bool) {
+	parsed, errParse := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	if errParse != nil {
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
+}
+
+func jwtExpiry(token string) time.Time {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) < 2 {
+		return time.Time{}
+	}
+	payload, errDecode := base64.RawURLEncoding.DecodeString(parts[1])
+	if errDecode != nil {
+		return time.Time{}
+	}
+	var claims struct {
+		ExpiresAt json.Number `json:"exp"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if errJSON := decoder.Decode(&claims); errJSON != nil {
+		return time.Time{}
+	}
+	seconds, errNumber := claims.ExpiresAt.Int64()
+	if errNumber != nil || seconds <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(seconds, 0).UTC()
 }
 
 func deviceFingerprint(keyPEM string) string {

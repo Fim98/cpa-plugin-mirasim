@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // InstallOAuth builds the self-contained provider storage that CLIProxyAPI
@@ -31,6 +32,7 @@ func InstallOAuth(storage Storage, accessToken, refreshToken string) (Storage, e
 	storage.AccessToken = accessToken
 	storage.RefreshToken = refreshToken
 	storage.DevicePrivateKey = keyPEM
+	storage.RecordTokenTiming(accessToken, 0, time.Now())
 	storage.applyDefaults()
 	if errValidate := storage.Validate(); errValidate != nil {
 		return Storage{}, errValidate

@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"testing"
@@ -33,8 +34,28 @@ func TestInstallOAuthReturnsSelfContainedAuthStorage(t *testing.T) {
 	if payload["access_token"] != "oauth-access" || payload["refresh_token"] != "oauth-refresh" || payload["device_private_key"] == "" || payload["auth_kind"] != "oauth" {
 		t.Fatal("auth JSON is missing self-contained credential fields")
 	}
+	if payload["expired"] == "" || payload["last_refresh"] == "" {
+		t.Fatal("auth JSON is missing explicit token timing")
+	}
 	if _, present := payload["credential_dir"]; present {
 		t.Fatal("auth JSON retained an obsolete credential directory")
+	}
+}
+
+func TestResolveAccessTokenExpiryUsesJWTExpiresInAndOpaqueFallback(t *testing.T) {
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"exp":1788438600}`))
+	jwt := header + "." + payload + ".signature"
+
+	if got := ResolveAccessTokenExpiry(jwt, 0, now); got.Unix() != 1788438600 {
+		t.Fatalf("JWT expiry = %s", got)
+	}
+	if got := ResolveAccessTokenExpiry(jwt, 600, now); !got.Equal(now.Add(10 * time.Minute)) {
+		t.Fatalf("expires_in expiry = %s", got)
+	}
+	if got := ResolveAccessTokenExpiry("opaque", 0, now); !got.Equal(now.Add(opaqueAccessTokenLifetime)) {
+		t.Fatalf("opaque fallback expiry = %s", got)
 	}
 }
 

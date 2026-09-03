@@ -83,7 +83,9 @@ func TestRefreshAuthReturnsRotatedCredentialsForHostPersistence(t *testing.T) {
 		t.Fatal(errInstall)
 	}
 	provider := New(pluginconfig.Defaults(), mirasim.NewPool())
-	response, errRefresh := provider.RefreshAuth(context.Background(), pluginapi.AuthRefreshRequest{
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	response, errRefresh := provider.RefreshAuth(canceled, pluginapi.AuthRefreshRequest{
 		AuthID:      "mirasim.json",
 		StorageJSON: storage.JSON(),
 		Metadata:    map[string]any{"custom_metadata": "preserved", "access_token": "do-not-copy"},
@@ -104,6 +106,9 @@ func TestRefreshAuthReturnsRotatedCredentialsForHostPersistence(t *testing.T) {
 	}
 	if response.Auth.Metadata["access_token"] != "new-access" || response.Auth.Metadata["refresh_token"] != "new-refresh" {
 		t.Fatal("RefreshAuth() did not return rotated credentials in CPA runtime metadata")
+	}
+	if response.Auth.Metadata["expired"] == "" || response.Auth.Metadata["last_refresh"] == "" {
+		t.Fatal("RefreshAuth() did not return conventional OAuth timing metadata")
 	}
 	if response.Auth.Attributes["custom_attribute"] != "preserved" || response.Auth.Attributes["auth_kind"] != "oauth" {
 		t.Fatal("RefreshAuth() lost standard or host-managed attributes")

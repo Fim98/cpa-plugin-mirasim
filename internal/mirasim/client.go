@@ -127,9 +127,6 @@ func (c *Client) NextRefreshAfter(now time.Time) time.Time {
 	if errLoad := c.loadLocked(); errLoad != nil {
 		return now
 	}
-	if c.accessExpiresAt.IsZero() {
-		return now
-	}
 	next := c.accessExpiresAt.Add(-accessRefreshLead)
 	if next.Before(now) {
 		return now
@@ -168,8 +165,8 @@ func (c *Client) SetAuthProxy(proxyURL string) error {
 	return nil
 }
 
-// RefreshAccessWithProxy remembers the host proxy for both scheduled and
-// request-time refreshes, then refreshes through the private client.
+// RefreshAccessWithProxy remembers the host proxy for CPA-coordinated
+// refreshes, then refreshes through the private client.
 func (c *Client) RefreshAccessWithProxy(ctx context.Context, proxyURL string) (time.Time, error) {
 	if errProxy := c.SetAuthProxy(proxyURL); errProxy != nil {
 		return time.Time{}, errProxy
@@ -392,33 +389,36 @@ func (c *Client) refreshAccessLocked(ctx context.Context) error {
 	}
 	resp, errDo := authHTTPClient.Do(request)
 	if errDo != nil {
-		return fmt.Errorf("refresh Mirasim access token: %w", errDo)
+		return newRefreshTransportError(errDo)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	responseBody, errRead := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody+1))
 	if errRead != nil {
-		return fmt.Errorf("read Mirasim token refresh response: %w", errRead)
+		return newRefreshTransportError(errRead)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// The refresh endpoint receives a long-lived secret in its request body.
 		// Do not risk reflecting an upstream response body into host logs.
-		return fmt.Errorf("Mirasim token refresh returned HTTP %d", resp.StatusCode)
+		return newRefreshHTTPError(resp.StatusCode, resp.Header, responseBody)
 	}
 	var payload struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if errDecode := json.Unmarshal(responseBody, &payload); errDecode != nil {
-		return fmt.Errorf("decode Mirasim token refresh response: %w", errDecode)
+		return newRefreshProtocolError("decode_token_response", errDecode)
 	}
 	payload.AccessToken = strings.TrimSpace(payload.AccessToken)
 	payload.RefreshToken = strings.TrimSpace(payload.RefreshToken)
 	if payload.AccessToken == "" {
-		return fmt.Errorf("Mirasim token refresh response is missing access_token")
+		return newRefreshProtocolError("missing_access_token", nil)
 	}
+	now := time.Now().UTC()
 	c.accessToken = payload.AccessToken
 	c.storage.AccessToken = payload.AccessToken
-	c.accessExpiresAt = jwtExpiry(payload.AccessToken)
+	c.storage.RecordTokenTiming(payload.AccessToken, payload.ExpiresIn, now)
+	c.accessExpiresAt = c.storage.AccessTokenExpiry(now)
 	if payload.RefreshToken != "" {
 		c.refreshToken = payload.RefreshToken
 		c.storage.RefreshToken = payload.RefreshToken
@@ -432,7 +432,7 @@ func (c *Client) loadLocked() error {
 	}
 	c.refreshToken = strings.TrimSpace(c.storage.RefreshToken)
 	c.accessToken = strings.TrimSpace(c.storage.AccessToken)
-	c.accessExpiresAt = jwtExpiry(c.accessToken)
+	c.accessExpiresAt = c.storage.AccessTokenExpiry(time.Now())
 	c.loaded = true
 	return nil
 }
@@ -550,30 +550,6 @@ func drainStream(ctx context.Context, chunks <-chan pluginapi.HTTPStreamChunk, l
 			}
 		}
 	}
-}
-
-func jwtExpiry(token string) time.Time {
-	parts := strings.Split(token, ".")
-	if len(parts) < 2 {
-		return time.Time{}
-	}
-	payload, errDecode := base64.RawURLEncoding.DecodeString(parts[1])
-	if errDecode != nil {
-		return time.Time{}
-	}
-	var claims struct {
-		ExpiresAt json.Number `json:"exp"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.UseNumber()
-	if errJSON := decoder.Decode(&claims); errJSON != nil {
-		return time.Time{}
-	}
-	seconds, errNumber := claims.ExpiresAt.Int64()
-	if errNumber != nil || seconds <= 0 {
-		return time.Time{}
-	}
-	return time.Unix(seconds, 0)
 }
 
 type Catalog struct {
@@ -720,6 +696,13 @@ func NewStatusError(status int, body []byte, headers http.Header) *StatusError {
 		body = body[:maxErrorBody]
 	}
 	return &StatusError{status: status, body: append([]byte(nil), body...), headers: cloneHeader(headers)}
+}
+
+func (e *StatusError) RetryAfter() *time.Duration {
+	if e == nil {
+		return nil
+	}
+	return parseRetryAfter(e.headers, time.Now())
 }
 
 func (e *StatusError) Error() string {

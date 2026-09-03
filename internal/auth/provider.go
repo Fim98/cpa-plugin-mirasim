@@ -18,6 +18,8 @@ type Provider struct {
 	oauth    *oauthCoordinator
 }
 
+const refreshTimeout = 60 * time.Second
+
 func New(settings pluginconfig.Settings, pool *mirasim.Pool) *Provider {
 	return &Provider{settings: settings, pool: pool, oauth: newOAuthCoordinator()}
 }
@@ -53,7 +55,9 @@ func (p *Provider) RefreshAuth(ctx context.Context, req pluginapi.AuthRefreshReq
 		return pluginapi.AuthRefreshResponse{}, fmt.Errorf("Mirasim auth storage is missing")
 	}
 	client := p.pool.Client(*storage)
-	if _, errRefresh := client.RefreshAccessWithProxy(ctx, req.Host.ProxyURL); errRefresh != nil {
+	refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+	defer cancelRefresh()
+	if _, errRefresh := client.RefreshAccessWithProxy(refreshCtx, req.Host.ProxyURL); errRefresh != nil {
 		return pluginapi.AuthRefreshResponse{}, errRefresh
 	}
 	*storage = client.Storage()

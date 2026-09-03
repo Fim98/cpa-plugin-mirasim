@@ -250,9 +250,10 @@ func TestRefreshAccessRotatesInMemoryStorageAndDoesNotLeakErrorBody(t *testing.T
 			t.Errorf("refresh token = %q, want %q", payload["refresh_token"], expected.Load().(string))
 		}
 		call := calls.Add(1)
-		_ = json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  jwtWithExpiry(time.Now().Add(time.Hour)),
 			"refresh_token": fmt.Sprintf("rotated-%d", call),
+			"expires_in":    3600,
 		})
 	}))
 	defer server.Close()
@@ -262,7 +263,7 @@ func TestRefreshAccessRotatesInMemoryStorageAndDoesNotLeakErrorBody(t *testing.T
 	if _, errRefresh := client.RefreshAccess(context.Background()); errRefresh != nil {
 		t.Fatalf("RefreshAccess() error = %v", errRefresh)
 	}
-	if refreshed := client.Storage(); refreshed.RefreshToken != "rotated-1" || refreshed.AccessToken == "" {
+	if refreshed := client.Storage(); refreshed.RefreshToken != "rotated-1" || refreshed.AccessToken == "" || refreshed.Expired == "" || refreshed.LastRefresh == "" {
 		t.Fatal("first refresh did not update provider-owned storage")
 	}
 
@@ -284,6 +285,35 @@ func TestRefreshAccessRotatesInMemoryStorageAndDoesNotLeakErrorBody(t *testing.T
 	_, errRefresh := errClient.RefreshAccess(context.Background())
 	if errRefresh == nil || strings.Contains(errRefresh.Error(), "SUPER_SECRET_REFLECTION") {
 		t.Fatalf("refresh error leaks response body: %v", errRefresh)
+	}
+	typed, ok := errRefresh.(*RefreshError)
+	if !ok || typed.StatusCode() != http.StatusUnauthorized || typed.Retryable() {
+		t.Fatalf("refresh error = %#v, want permanent HTTP 401", errRefresh)
+	}
+}
+
+func TestRefreshErrorClassifiesRateLimitWithoutLeakingBody(t *testing.T) {
+	headers := make(http.Header)
+	headers.Set("Retry-After", "120")
+	errRefresh := newRefreshHTTPError(http.StatusTooManyRequests, headers, []byte(`{"error":{"type":"rate_limit_error","message":"SECRET"}}`))
+	if errRefresh.StatusCode() != http.StatusTooManyRequests || !errRefresh.Retryable() {
+		t.Fatalf("classification = %#v", errRefresh)
+	}
+	if retry := errRefresh.RetryAfter(); retry == nil || *retry != 2*time.Minute {
+		t.Fatalf("RetryAfter = %v", retry)
+	}
+	if strings.Contains(errRefresh.Error(), "SECRET") || !strings.Contains(errRefresh.Error(), "rate_limit_error") {
+		t.Fatalf("unsafe or incomplete error = %q", errRefresh.Error())
+	}
+}
+
+func TestOpaqueTokenSchedulesConservativeRefresh(t *testing.T) {
+	storage, _, _ := newTestStorage(t, "opaque-access-token")
+	client := NewClient(storage)
+	now := time.Now()
+	next := client.NextRefreshAfter(now)
+	if next.Before(now.Add(27*time.Minute)) || next.After(now.Add(29*time.Minute)) {
+		t.Fatalf("NextRefreshAfter = %s, want about 28 minutes", next)
 	}
 }
 
