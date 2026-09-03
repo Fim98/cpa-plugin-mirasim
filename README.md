@@ -1,6 +1,6 @@
 # Mirasim Provider Plugin
 
-This plugin adds Mirasim provider support to CLIProxyAPI through its native plugin ABI. It ports the runtime behavior of `mira2api` into the host process: browser OAuth login, CPA-managed auth storage, token refresh, Ed25519 device signatures, encrypted relay metadata, device tickets, dynamic models, Messages/Responses forwarding, protocol translation, streaming, and Mirasim's response-header rate-limit signals.
+This plugin adds Mirasim provider support to CLIProxyAPI through its native plugin ABI. It ports the runtime behavior of `mira2api` into the host process: browser OAuth login, CPA-managed auth storage, token refresh, Ed25519 device signatures, encrypted relay metadata, device tickets, dynamic models, Messages/Responses forwarding, protocol translation, streaming, and Mirasim's structured quota signals.
 
 The implementation follows the current [CLIProxyAPI plugin contract](https://github.com/router-for-me/CLIProxyAPI) and the packaging pattern used by [cpa-plugin-gemini-cli](https://github.com/router-for-me/cpa-plugin-gemini-cli).
 
@@ -21,7 +21,7 @@ The implementation follows the current [CLIProxyAPI plugin contract](https://git
 - Accepts and emits CLIProxyAPI's `openai`, `openai-response`, `claude`, `gemini`, and `codex` formats.
 - Implements CPA model-suffix thinking controls after protocol translation: Codex `reasoning.effort`, Claude adaptive on/off, and legacy Claude token budgets. Requests the relay cannot represent faithfully return HTTP 400 instead of silently changing effort.
 - Preserves streaming SSE and translates tool definitions, tool selection, tool calls, and tool continuations through CLIProxyAPI's built-in translators.
-- Exposes the Mirasim rate-limit signals through a read-only plugin management route and ships a companion Management Center adapter for `management.html#/quota`.
+- Reads structured limits from `GET /v1/limits`, falls back to Mirasim's signed Messages response-header probe when necessary, and ships a Management Center adapter for `management.html#/quota`.
 
 ## Protocol routing
 
@@ -172,9 +172,11 @@ Multiple Mirasim accounts can coexist in the same CPA `auth-dir`. Repeating OAut
 
 An unversioned self-contained Mirasim OAuth JSON is accepted and normalized to `storage_version: 1` in runtime. CPA writes the normalized form on the next scheduled or 401-triggered refresh. A higher or malformed version is rejected rather than guessed. This migration does not restore the removed directory/import workflow; see [ADR 0011](docs/decisions/0011-version-oauth-storage-and-publish-model-capabilities.md).
 
-## Rate-limit signals
+## Quota signals
 
-Mirasim does not expose a separate `/quota` or `/usage` JSON API. The plugin refreshes `GET /v1/models` and returns these response headers:
+Mirasim 0.0.272 exposes structured quota data through signed `GET /v1/limits`. The plugin returns every valid window with its name, raw `budget` and `used` units, used and remaining percentages, reset time, model scope, and status. It also preserves the top-level `paid` and `degraded` signals.
+
+If `/v1/limits` returns the compatibility statuses 405 or 420, the plugin performs the same signed one-token Messages probe as the official client and reads these legacy response headers:
 
 - `anthropic-ratelimit-unified-5h-utilization`
 - `anthropic-ratelimit-unified-5h-reset`
@@ -188,7 +190,7 @@ GET /v0/management/mirasim/quota
 GET /v0/management/mirasim/quota?auth_index=<runtime-auth-index>
 ```
 
-The first form works when exactly one Mirasim auth is loaded. The response includes an `available` flag, the raw header values, parsed UTC reset times, observation time, and model count. If a fresh model response omits the headers, `available` is false and the plugin does not reuse a stale snapshot. These fields are rate-limit signals, not billing usage. The endpoint uses CLIProxyAPI's normal Management API authentication and returns `Cache-Control: no-store`.
+The first form works when exactly one Mirasim auth is loaded. A fresh response without valid structured windows or fallback headers has `available: false`; stale data is not reused. The endpoint uses CLIProxyAPI's normal Management API authentication and returns `Cache-Control: no-store`.
 
 ### Management Center quota page
 
@@ -198,7 +200,7 @@ The stock Management Center has a compile-time quota-provider registry, so a nat
 .\scripts\build-management-center.ps1
 ```
 
-This produces `dist/management.html` from a pinned upstream Management Center revision. The patched panel recognizes Mirasim auth records, adds a Mirasim tab/card, calls the plugin quota route with the runtime `auth_index`, and displays the 5-hour and 7-day remaining capacity and reset times. It keeps Mirasim separate from native Claude OAuth credentials.
+This produces `dist/management.html` from a pinned upstream Management Center revision. The patched panel recognizes Mirasim auth records, adds a Mirasim tab/card, calls the plugin quota route with the runtime `auth_index`, and displays all returned limit windows, raw-unit details, remaining capacity, reset times, model scope, plan type, and degraded status. It keeps Mirasim separate from native Claude OAuth credentials.
 
 For Docker Compose, persist the custom panel with a read-only bind mount alongside the plugin mount:
 
@@ -217,7 +219,7 @@ remote-management:
   disable-auto-update-panel: true
 ```
 
-The frontend integration and its upgrade boundary are documented in [ADR 0004](docs/decisions/0004-integrate-quota-with-management-center.md).
+The frontend integration and its upgrade boundary are documented in [ADR 0014](docs/decisions/0014-adopt-structured-mirasim-limits.md).
 
 ## Security boundary
 

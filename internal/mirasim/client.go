@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -26,11 +27,16 @@ import (
 const (
 	sessionPath       = "/v1/device/session"
 	modelsPath        = "/v1/models"
+	limitsPath        = "/v1/limits"
 	accessRefreshLead = 2 * time.Minute
 	ticketRefreshLead = time.Minute
 	maxErrorBody      = 1 << 20
 	maxErrorMessage   = 4 << 10
-	quotaSource       = "GET /v1/models response headers"
+	quotaHeaderSource = "GET /v1/models response headers"
+	quotaLimitsSource = "GET /v1/limits JSON"
+	quotaProbeSource  = "POST /v1/messages response headers"
+	quotaProbeHeader  = "x-mirasim-probe"
+	quotaProbeModel   = "claude-haiku-4-5-20251001-paid"
 )
 
 var quotaHeaderNames = []string{
@@ -175,6 +181,12 @@ func (c *Client) RefreshAccessWithProxy(ctx context.Context, proxyURL string) (t
 }
 
 func (c *Client) Do(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers http.Header, body []byte) (pluginapi.HTTPResponse, error) {
+	return c.do(ctx, client, method, requestPath, query, headers, nil, body)
+}
+
+// do accepts provider-owned headers separately so untrusted downstream
+// x-mirasim-* values can remain blocked while internal probes are forwarded.
+func (c *Client) do(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers, providerHeaders http.Header, body []byte) (pluginapi.HTTPResponse, error) {
 	if client == nil {
 		return pluginapi.HTTPResponse{}, fmt.Errorf("host HTTP client is required")
 	}
@@ -188,6 +200,9 @@ func (c *Client) Do(ctx context.Context, client pluginapi.HostHTTPClient, method
 			return pluginapi.HTTPResponse{}, errAuth
 		}
 		outboundHeaders := prepareHeaders(headers, authHeaders, false)
+		for key, values := range providerHeaders {
+			outboundHeaders[http.CanonicalHeaderKey(key)] = append([]string(nil), values...)
+		}
 		resp, errDo := client.Do(ctx, pluginapi.HTTPRequest{
 			Method:  method,
 			URL:     endpoint,
@@ -255,7 +270,7 @@ func (c *Client) ListModels(ctx context.Context, client pluginapi.HostHTTPClient
 	if !available {
 		quota = QuotaSnapshot{
 			Available:  false,
-			Source:     quotaSource,
+			Source:     quotaHeaderSource,
 			ObservedAt: time.Now().UTC(),
 			Headers:    make(map[string]string),
 		}
@@ -263,10 +278,74 @@ func (c *Client) ListModels(ctx context.Context, client pluginapi.HostHTTPClient
 	return Catalog{Models: models, Quota: quota}, nil
 }
 
+// FetchQuota follows the official client contract: structured limits first,
+// then the legacy rate-limit-header probe when that route is unavailable.
+func (c *Client) FetchQuota(ctx context.Context, client pluginapi.HostHTTPClient) (QuotaSnapshot, error) {
+	providerHeaders := http.Header{quotaProbeHeader: []string{"usage"}}
+	resp, errDo := c.do(ctx, client, http.MethodGet, limitsPath, nil, http.Header{
+		"Accept": []string{"application/json"},
+	}, providerHeaders, nil)
+	if errDo != nil {
+		return QuotaSnapshot{}, errDo
+	}
+	if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == 420 {
+		return c.fetchQuotaFromHeaders(ctx, client, providerHeaders)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return QuotaSnapshot{}, NewStatusError(resp.StatusCode, resp.Body, resp.Headers)
+	}
+	quota, errParse := QuotaFromLimits(resp.Body, time.Now())
+	if errParse != nil {
+		return QuotaSnapshot{}, errParse
+	}
+	c.replaceQuota(quota)
+	return quota.Clone(), nil
+}
+
+func (c *Client) fetchQuotaFromHeaders(ctx context.Context, client pluginapi.HostHTTPClient, providerHeaders http.Header) (QuotaSnapshot, error) {
+	body, errMarshal := json.Marshal(map[string]any{
+		"model":      quotaProbeModel,
+		"max_tokens": 1,
+		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if errMarshal != nil {
+		return QuotaSnapshot{}, errMarshal
+	}
+	resp, errDo := c.do(ctx, client, http.MethodPost, "/v1/messages", nil, http.Header{
+		"Accept":            []string{"application/json"},
+		"Anthropic-Version": []string{"2023-06-01"},
+		"Content-Type":      []string{"application/json"},
+	}, providerHeaders, body)
+	if errDo != nil {
+		return QuotaSnapshot{}, errDo
+	}
+	quota, available := QuotaFromHeaders(resp.Headers, time.Now())
+	quota.Source = quotaProbeSource
+	if !available {
+		quota = QuotaSnapshot{
+			Available:  false,
+			Source:     quotaProbeSource,
+			ObservedAt: time.Now().UTC(),
+			Headers:    make(map[string]string),
+		}
+	}
+	c.replaceQuota(quota)
+	if (resp.StatusCode < 200 || resp.StatusCode >= 300) && !available {
+		return QuotaSnapshot{}, NewStatusError(resp.StatusCode, resp.Body, resp.Headers)
+	}
+	return quota.Clone(), nil
+}
+
 func (c *Client) LastQuota() QuotaSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.quota.Clone()
+}
+
+func (c *Client) replaceQuota(quota QuotaSnapshot) {
+	c.mu.Lock()
+	c.quota = quota.Clone()
+	c.mu.Unlock()
 }
 
 func (c *Client) authHeaders(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, body []byte, forceTicket bool) (http.Header, error) {
@@ -608,12 +687,27 @@ func ParseModelCatalog(raw []byte) ([]RemoteModel, error) {
 }
 
 type QuotaSnapshot struct {
-	Available  bool              `json:"available"`
-	Source     string            `json:"source"`
-	ObservedAt time.Time         `json:"observed_at"`
-	Headers    map[string]string `json:"headers"`
-	FiveHour   QuotaWindow       `json:"five_hour"`
-	SevenDay   QuotaWindow       `json:"seven_day"`
+	Available  bool               `json:"available"`
+	Source     string             `json:"source"`
+	ObservedAt time.Time          `json:"observed_at"`
+	Status     string             `json:"status,omitempty"`
+	Paid       *bool              `json:"paid,omitempty"`
+	Degraded   bool               `json:"degraded,omitempty"`
+	Headers    map[string]string  `json:"headers,omitempty"`
+	Windows    []QuotaLimitWindow `json:"windows,omitempty"`
+	FiveHour   QuotaWindow        `json:"five_hour"`
+	SevenDay   QuotaWindow        `json:"seven_day"`
+}
+
+type QuotaLimitWindow struct {
+	Name             string     `json:"name"`
+	Budget           float64    `json:"budget"`
+	Used             float64    `json:"used"`
+	UsedPercent      *float64   `json:"used_percent,omitempty"`
+	RemainingPercent *float64   `json:"remaining_percent,omitempty"`
+	ResetAt          *time.Time `json:"reset_at,omitempty"`
+	ModelScoped      bool       `json:"model_scoped,omitempty"`
+	Status           string     `json:"status"`
 }
 
 type QuotaWindow struct {
@@ -637,7 +731,7 @@ func QuotaFromHeaders(headers http.Header, observedAt time.Time) (QuotaSnapshot,
 	}
 	return QuotaSnapshot{
 		Available:  true,
-		Source:     quotaSource,
+		Source:     quotaHeaderSource,
 		ObservedAt: observedAt.UTC(),
 		Headers:    values,
 		FiveHour: QuotaWindow{
@@ -653,12 +747,135 @@ func QuotaFromHeaders(headers http.Header, observedAt time.Time) (QuotaSnapshot,
 	}, true
 }
 
+func QuotaFromLimits(raw []byte, observedAt time.Time) (QuotaSnapshot, error) {
+	var payload struct {
+		Windows []struct {
+			Name        string          `json:"name"`
+			Budget      *float64        `json:"budget"`
+			Used        *float64        `json:"used"`
+			ResetAt     json.RawMessage `json:"reset_at"`
+			ModelScoped bool            `json:"model_scoped"`
+		} `json:"windows"`
+		Paid     *bool `json:"paid"`
+		Degraded bool  `json:"degraded"`
+	}
+	if errDecode := json.Unmarshal(raw, &payload); errDecode != nil {
+		return QuotaSnapshot{}, fmt.Errorf("decode Mirasim limits: %w", errDecode)
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
+	windows := make([]QuotaLimitWindow, 0, len(payload.Windows))
+	for _, rawWindow := range payload.Windows {
+		name := strings.TrimSpace(rawWindow.Name)
+		if name == "" || rawWindow.Budget == nil || rawWindow.Used == nil ||
+			math.IsNaN(*rawWindow.Budget) || math.IsInf(*rawWindow.Budget, 0) || *rawWindow.Budget < 0 ||
+			math.IsNaN(*rawWindow.Used) || math.IsInf(*rawWindow.Used, 0) {
+			continue
+		}
+		window := QuotaLimitWindow{
+			Name:        name,
+			Budget:      *rawWindow.Budget,
+			Used:        *rawWindow.Used,
+			ResetAt:     resetTimeJSON(rawWindow.ResetAt),
+			ModelScoped: rawWindow.ModelScoped,
+			Status:      "allowed",
+		}
+		if window.Budget > 0 {
+			used := clampPercent(window.Used / window.Budget * 100)
+			remaining := clampPercent(100 - used)
+			window.UsedPercent = &used
+			window.RemainingPercent = &remaining
+			switch {
+			case used >= 100:
+				window.Status = "limit_reached"
+			case used >= 80:
+				window.Status = "warning"
+			}
+		}
+		windows = append(windows, window)
+	}
+	status := quotaStatus(windows)
+	return QuotaSnapshot{
+		Available:  len(windows) > 0,
+		Source:     quotaLimitsSource,
+		ObservedAt: observedAt.UTC(),
+		Status:     status,
+		Paid:       payload.Paid,
+		Degraded:   payload.Degraded,
+		Windows:    windows,
+	}, nil
+}
+
+func quotaStatus(windows []QuotaLimitWindow) string {
+	candidates := windows
+	global := make([]QuotaLimitWindow, 0, len(windows))
+	for _, window := range windows {
+		if !window.ModelScoped {
+			global = append(global, window)
+		}
+	}
+	if len(global) > 0 {
+		candidates = global
+	}
+	status := "allowed"
+	for _, window := range candidates {
+		if window.Status == "limit_reached" {
+			return window.Status
+		}
+		if window.Status == "warning" {
+			status = window.Status
+		}
+	}
+	return status
+}
+
+func clampPercent(value float64) float64 {
+	return math.Max(0, math.Min(100, math.Round(value*100)/100))
+}
+
+func resetTimeJSON(raw json.RawMessage) *time.Time {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var text string
+	if errString := json.Unmarshal(raw, &text); errString == nil {
+		return resetTime(text)
+	}
+	var number json.Number
+	if errNumber := json.Unmarshal(raw, &number); errNumber == nil {
+		return resetTime(number.String())
+	}
+	return nil
+}
+
 func (q QuotaSnapshot) Clone() QuotaSnapshot {
 	clone := q
 	if q.Headers != nil {
 		clone.Headers = make(map[string]string, len(q.Headers))
 		for key, value := range q.Headers {
 			clone.Headers[key] = value
+		}
+	}
+	if q.Paid != nil {
+		paid := *q.Paid
+		clone.Paid = &paid
+	}
+	if q.Windows != nil {
+		clone.Windows = append([]QuotaLimitWindow(nil), q.Windows...)
+		for index := range clone.Windows {
+			if q.Windows[index].UsedPercent != nil {
+				value := *q.Windows[index].UsedPercent
+				clone.Windows[index].UsedPercent = &value
+			}
+			if q.Windows[index].RemainingPercent != nil {
+				value := *q.Windows[index].RemainingPercent
+				clone.Windows[index].RemainingPercent = &value
+			}
+			if q.Windows[index].ResetAt != nil {
+				value := *q.Windows[index].ResetAt
+				clone.Windows[index].ResetAt = &value
+			}
 		}
 	}
 	return clone
@@ -678,12 +895,20 @@ func safeHeaderValue(value string) string {
 }
 
 func resetTime(value string) *time.Time {
-	seconds, errParse := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
-	if errParse != nil || seconds <= 0 {
-		return nil
+	value = strings.TrimSpace(value)
+	if seconds, errParse := strconv.ParseInt(value, 10, 64); errParse == nil && seconds > 0 {
+		if seconds > 1_000_000_000_000 {
+			parsed := time.UnixMilli(seconds).UTC()
+			return &parsed
+		}
+		parsed := time.Unix(seconds, 0).UTC()
+		return &parsed
 	}
-	parsed := time.Unix(seconds, 0).UTC()
-	return &parsed
+	if parsed, errParse := time.Parse(time.RFC3339, value); errParse == nil {
+		parsed = parsed.UTC()
+		return &parsed
+	}
+	return nil
 }
 
 type StatusError struct {

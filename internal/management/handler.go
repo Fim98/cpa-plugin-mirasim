@@ -44,7 +44,7 @@ func (h *Handler) RegisterManagement(_ context.Context, req pluginapi.Management
 	response := pluginapi.ManagementRegistrationResponse{Routes: []pluginapi.ManagementRoute{{
 		Method:      http.MethodGet,
 		Path:        QuotaRoute,
-		Description: "Refreshes GET /v1/models and returns Mirasim rate-limit response-header signals.",
+		Description: "Returns Mirasim structured limits with a signed response-header probe fallback.",
 		Handler:     h,
 	}}}
 	if h.oauth != nil {
@@ -95,18 +95,17 @@ func (h *Handler) HandleWithHost(ctx context.Context, req pluginapi.ManagementRe
 	if storage == nil {
 		return jsonResponse(http.StatusBadRequest, map[string]any{"error": "selected auth is not a Mirasim credential"}), nil
 	}
-	catalog, errCatalog := h.pool.Client(*storage).ListModels(ctx, host.HTTPClient())
-	if errCatalog != nil {
-		return jsonResponse(statusFromError(errCatalog), map[string]any{
+	quota, errQuota := h.pool.Client(*storage).FetchQuota(ctx, host.HTTPClient())
+	if errQuota != nil {
+		return jsonResponse(statusFromError(errQuota), map[string]any{
 			"auth_index": authIndex,
-			"error":      errCatalog.Error(),
+			"error":      errQuota.Error(),
 		}), nil
 	}
 	return jsonResponse(http.StatusOK, map[string]any{
-		"auth_index":  authIndex,
-		"model_count": len(catalog.Models),
-		"quota":       catalog.Quota,
-		"note":        "These are rate-limit signals from GET /v1/models response headers, not billing usage.",
+		"auth_index": authIndex,
+		"quota":      quota,
+		"note":       "Quota is read from GET /v1/limits, with Mirasim's signed Messages header probe as a compatibility fallback.",
 	}), nil
 }
 

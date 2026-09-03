@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-09-01
+Accepted — 2026-09-01; quota-source and fixed-window decisions superseded by [ADR 0014](0014-adopt-structured-mirasim-limits.md)
 
 ## Context
 

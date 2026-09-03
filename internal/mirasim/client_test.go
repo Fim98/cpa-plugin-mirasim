@@ -115,6 +115,94 @@ func TestListModelsSignsRequestsAndCapturesQuota(t *testing.T) {
 	}
 }
 
+func TestFetchQuotaUsesStructuredLimits(t *testing.T) {
+	accessToken := futureJWT()
+	storage, publicKey, relayPrivate := newTestStorage(t, accessToken)
+	client := NewClient(storage)
+	calls := 0
+	host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		calls++
+		parsed, _ := url.Parse(req.URL)
+		switch parsed.Path {
+		case sessionPath:
+			assertDeviceSessionRequest(t, publicKey, req, accessToken)
+			return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"ticket":"device-ticket","expiresIn":900}`)}, nil
+		case limitsPath:
+			assertSealedRelayRequest(t, publicKey, relayPrivate, req, "device-ticket")
+			if req.Method != http.MethodGet || req.Headers.Get(quotaProbeHeader) != "usage" {
+				t.Errorf("limits request = %s, probe = %q", req.Method, req.Headers.Get(quotaProbeHeader))
+			}
+			return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{
+				"paid":true,
+				"degraded":true,
+				"windows":[
+					{"name":"5h","budget":100,"used":25,"reset_at":"2026-09-04T01:02:03Z"},
+					{"name":"7d-sonnet","budget":200,"used":180,"reset_at":1788431522,"model_scoped":true},
+					{"name":"invalid","used":1}
+				]
+			}`)}, nil
+		default:
+			return pluginapi.HTTPResponse{}, fmt.Errorf("unexpected path %s", parsed.Path)
+		}
+	}}
+
+	quota, errQuota := client.FetchQuota(context.Background(), host)
+	if errQuota != nil {
+		t.Fatalf("FetchQuota() error = %v", errQuota)
+	}
+	if calls != 2 || !quota.Available || quota.Source != quotaLimitsSource || quota.Status != "allowed" || quota.Paid == nil || !*quota.Paid || !quota.Degraded {
+		t.Fatalf("calls = %d, quota = %#v", calls, quota)
+	}
+	if len(quota.Windows) != 2 || quota.Windows[0].UsedPercent == nil || *quota.Windows[0].UsedPercent != 25 || quota.Windows[0].RemainingPercent == nil || *quota.Windows[0].RemainingPercent != 75 {
+		t.Fatalf("windows = %#v", quota.Windows)
+	}
+	if quota.Windows[0].ResetAt == nil || quota.Windows[0].ResetAt.Format(time.RFC3339) != "2026-09-04T01:02:03Z" || quota.Windows[1].ResetAt == nil || quota.Windows[1].ResetAt.Unix() != 1788431522 {
+		t.Fatalf("reset times = %#v", quota.Windows)
+	}
+	quota.Windows[0].Name = "changed"
+	if client.LastQuota().Windows[0].Name != "5h" {
+		t.Fatal("FetchQuota returned mutable cached windows")
+	}
+}
+
+func TestFetchQuotaFallsBackToSignedMessagesHeaderProbe(t *testing.T) {
+	accessToken := futureJWT()
+	storage, publicKey, relayPrivate := newTestStorage(t, accessToken)
+	client := NewClient(storage)
+	calls := 0
+	host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		calls++
+		parsed, _ := url.Parse(req.URL)
+		switch parsed.Path {
+		case sessionPath:
+			assertDeviceSessionRequest(t, publicKey, req, accessToken)
+			return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"ticket":"device-ticket","expiresIn":900}`)}, nil
+		case limitsPath:
+			assertSealedRelayRequest(t, publicKey, relayPrivate, req, "device-ticket")
+			return pluginapi.HTTPResponse{StatusCode: http.StatusMethodNotAllowed, Headers: make(http.Header), Body: []byte(`{"error":"unsupported"}`)}, nil
+		case "/v1/messages":
+			assertSealedRelayRequest(t, publicKey, relayPrivate, req, "device-ticket")
+			if req.Headers.Get(quotaProbeHeader) != "usage" || !strings.Contains(string(req.Body), quotaProbeModel) {
+				t.Errorf("probe header/body = %q / %s", req.Headers.Get(quotaProbeHeader), req.Body)
+			}
+			headers := make(http.Header)
+			headers.Set(quotaHeaderNames[0], "0.4")
+			headers.Set(quotaHeaderNames[1], "1788167238")
+			return pluginapi.HTTPResponse{StatusCode: http.StatusTooManyRequests, Headers: headers, Body: []byte(`{"error":"rate limited"}`)}, nil
+		default:
+			return pluginapi.HTTPResponse{}, fmt.Errorf("unexpected path %s", parsed.Path)
+		}
+	}}
+
+	quota, errQuota := client.FetchQuota(context.Background(), host)
+	if errQuota != nil {
+		t.Fatalf("FetchQuota() error = %v", errQuota)
+	}
+	if calls != 3 || !quota.Available || quota.Source != quotaProbeSource || quota.FiveHour.Utilization != "0.4" {
+		t.Fatalf("calls = %d, quota = %#v", calls, quota)
+	}
+}
+
 func TestValidateRemoteUsesStandaloneClientForCLILogin(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -441,7 +529,7 @@ func assertSealedRelayRequest(t *testing.T, publicKey ed25519.PublicKey, relayPr
 	t.Helper()
 	for name := range req.Headers {
 		lowerName := strings.ToLower(name)
-		if isSealedRelayHeader(lowerName) {
+		if isSealedRelayHeader(lowerName) && lowerName != quotaProbeHeader {
 			t.Errorf("Mirasim header %s leaked outside x-mirasim-enc", name)
 		}
 	}
