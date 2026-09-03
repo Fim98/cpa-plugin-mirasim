@@ -25,19 +25,25 @@ import (
 )
 
 const (
-	sessionPath       = "/v1/device/session"
-	modelsPath        = "/v1/models"
-	limitsPath        = "/v1/limits"
-	accessRefreshLead = 2 * time.Minute
-	ticketRefreshLead = time.Minute
-	maxErrorBody      = 1 << 20
-	maxErrorMessage   = 4 << 10
-	quotaHeaderSource = "GET /v1/models response headers"
-	quotaLimitsSource = "GET /v1/limits JSON"
-	quotaProbeSource  = "POST /v1/messages response headers"
-	quotaProbeHeader  = "x-mirasim-probe"
-	quotaProbeModel   = "claude-haiku-4-5-20251001-paid"
-	claudeOAuthBeta   = "oauth-2025-04-20"
+	sessionPath        = "/v1/device/session"
+	modelsPath         = "/v1/models"
+	limitsPath         = "/v1/limits"
+	accessRefreshLead  = 2 * time.Minute
+	ticketRefreshLead  = 2 * time.Minute
+	ticketDefaultTTL   = 10 * time.Minute
+	ticketBackoffBase  = time.Second
+	ticketBackoffMax   = 30 * time.Second
+	ticketRetryMax     = 15 * time.Minute
+	ticketRefusalFloor = 30 * time.Second
+	profileTimeout     = 5 * time.Second
+	maxErrorBody       = 1 << 20
+	maxErrorMessage    = 4 << 10
+	quotaHeaderSource  = "GET /v1/models response headers"
+	quotaLimitsSource  = "GET /v1/limits JSON"
+	quotaProbeSource   = "POST /v1/messages response headers"
+	quotaProbeHeader   = "x-mirasim-probe"
+	quotaProbeModel    = "claude-haiku-4-5-20251001-paid"
+	claudeOAuthBeta    = "oauth-2025-04-20"
 )
 
 var quotaHeaderNames = []string{
@@ -84,29 +90,40 @@ func (p *Pool) Forget(storage credentials.Storage) {
 type Client struct {
 	storage credentials.Storage
 
-	mu              sync.Mutex
-	loaded          bool
-	accessToken     string
-	refreshToken    string
-	accessExpiresAt time.Time
-	privateKey      ed25519.PrivateKey
-	publicKeyBase64 string
-	deviceID        string
-	sessionID       string
-	ticket          string
-	ticketExpiresAt time.Time
-	quota           QuotaSnapshot
-	authProxyURL    string
+	mu                 sync.Mutex
+	loaded             bool
+	accessToken        string
+	refreshToken       string
+	accessExpiresAt    time.Time
+	privateKey         ed25519.PrivateKey
+	publicKeyBase64    string
+	deviceID           string
+	sessionID          string
+	ticket             string
+	ticketExpiresAt    time.Time
+	ticketRetryAt      time.Time
+	ticketFailures     int
+	ticketLastError    error
+	ticketRefusedUntil time.Time
+	refreshRequired    bool
+	quota              QuotaSnapshot
+	authProxyURL       string
+	now                func() time.Time
 }
 
 func NewClient(storage credentials.Storage) *Client {
-	return &Client{storage: storage}
+	return &Client{storage: storage, now: time.Now}
 }
 
 func (c *Client) Storage() credentials.Storage {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.storage
+	storage := c.storage
+	if c.storage.PlanExpiresAt != nil {
+		value := *c.storage.PlanExpiresAt
+		storage.PlanExpiresAt = &value
+	}
+	return storage
 }
 
 func (c *Client) Validate() error {
@@ -135,6 +152,13 @@ func (c *Client) NextRefreshAfter(now time.Time) time.Time {
 		return now
 	}
 	next := c.accessExpiresAt.Add(-accessRefreshLead)
+	profileNext := now
+	if checkedAt := c.storage.ProfileCheckTime(); !checkedAt.IsZero() {
+		profileNext = checkedAt.Add(credentials.ProfileRefreshInterval)
+	}
+	if profileNext.Before(next) {
+		next = profileNext
+	}
 	if next.Before(now) {
 		return now
 	}
@@ -152,8 +176,8 @@ func (c *Client) RefreshAccess(ctx context.Context) (time.Time, error) {
 	if errRefresh := c.refreshAccessLocked(ctx); errRefresh != nil {
 		return time.Time{}, errRefresh
 	}
-	c.ticket = ""
-	c.ticketExpiresAt = time.Time{}
+	c.clearTicketLocked()
+	c.refreshRequired = false
 	return c.accessExpiresAt, nil
 }
 
@@ -163,8 +187,12 @@ func (c *Client) RefreshAccess(ctx context.Context) (time.Time, error) {
 // the long-lived refresh token.
 func (c *Client) SetAuthProxy(proxyURL string) error {
 	proxyURL = strings.TrimSpace(proxyURL)
-	if _, _, errBuild := proxyutil.BuildHTTPTransport(proxyURL); errBuild != nil {
+	transport, _, errBuild := proxyutil.BuildHTTPTransport(proxyURL)
+	if errBuild != nil {
 		return fmt.Errorf("configure Mirasim auth proxy: %w", errBuild)
+	}
+	if transport != nil {
+		transport.CloseIdleConnections()
 	}
 	c.mu.Lock()
 	c.authProxyURL = proxyURL
@@ -179,6 +207,53 @@ func (c *Client) RefreshAccessWithProxy(ctx context.Context, proxyURL string) (t
 		return time.Time{}, errProxy
 	}
 	return c.RefreshAccess(ctx)
+}
+
+// RefreshForHost distinguishes CPA's periodic profile check from a reactive
+// refresh requested by a rejected relay credential. It refreshes the access
+// token when it is due, when a request marked it stale, or when /auth/me has a
+// newly changed plan state that does not match the JWT claims.
+func (c *Client) RefreshForHost(ctx context.Context, proxyURL string) (time.Time, error) {
+	if errProxy := c.SetAuthProxy(proxyURL); errProxy != nil {
+		return time.Time{}, errProxy
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if errLoad := c.loadLocked(); errLoad != nil {
+		return time.Time{}, errLoad
+	}
+	now := c.nowTime()
+	checkedAt := c.storage.ProfileCheckTime()
+	profileDue := checkedAt.IsZero() || !now.Before(checkedAt.Add(credentials.ProfileRefreshInterval))
+	accessDue := !c.accessExpiresAt.IsZero() && !now.Before(c.accessExpiresAt.Add(-accessRefreshLead))
+	mustRefresh := c.refreshRequired || accessDue
+
+	var observed *accountProfile
+	if profileDue {
+		if profile, errProfile := c.fetchAccountProfileLocked(ctx); errProfile == nil {
+			observed = &profile
+			profileChanged := checkedAt.IsZero() || profile.Plan != c.storage.Plan || !sameInt64(profile.PlanExpiresAt, c.storage.PlanExpiresAt)
+			tokenPlan, tokenPlanExpiresAt := credentials.AccessTokenPlan(c.accessToken)
+			planMismatch := profile.Plan != "" && (profile.Plan != tokenPlan || profile.PlanExpiryKnown && !sameInt64(profile.PlanExpiresAt, tokenPlanExpiresAt))
+			mustRefresh = mustRefresh || profileChanged && planMismatch
+		}
+	} else if !mustRefresh {
+		// A host refresh before the periodic/profile or expiry boundary is a
+		// reactive/manual refresh; preserve CPA's 401 recovery semantics.
+		mustRefresh = true
+	}
+
+	if mustRefresh {
+		if errRefresh := c.refreshAccessLocked(ctx); errRefresh != nil {
+			return time.Time{}, errRefresh
+		}
+		c.clearTicketLocked()
+		c.refreshRequired = false
+	}
+	if observed != nil {
+		c.storage.RecordProfile(observed.Email, observed.Plan, observed.PlanExpiresAt, now)
+	}
+	return c.accessExpiresAt, nil
 }
 
 func (c *Client) Do(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers http.Header, body []byte) (pluginapi.HTTPResponse, error) {
@@ -215,6 +290,9 @@ func (c *Client) do(ctx context.Context, client pluginapi.HostHTTPClient, method
 		}
 		c.observeQuota(resp.Headers)
 		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 {
+			if resp.StatusCode == http.StatusUnauthorized {
+				c.markAccessRefreshRequired()
+			}
 			return resp, nil
 		}
 	}
@@ -246,6 +324,9 @@ func (c *Client) DoStream(ctx context.Context, client pluginapi.HostHTTPClient, 
 		}
 		c.observeQuota(resp.Headers)
 		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 {
+			if resp.StatusCode == http.StatusUnauthorized {
+				c.markAccessRefreshRequired()
+			}
 			return resp, nil
 		}
 		drainStream(ctx, resp.Chunks, maxErrorBody)
@@ -359,8 +440,9 @@ func (c *Client) authHeaders(ctx context.Context, client pluginapi.HostHTTPClien
 		return nil, errSigner
 	}
 	if forceTicket {
-		c.ticket = ""
-		c.ticketExpiresAt = time.Time{}
+		if errRefusal := c.refuseTicketLocked(); errRefusal != nil {
+			return nil, errRefusal
+		}
 	}
 	ticket, errTicket := c.ticketLocked(ctx, client)
 	if errTicket != nil {
@@ -382,9 +464,15 @@ func (c *Client) authHeaders(ctx context.Context, client pluginapi.HostHTTPClien
 }
 
 func (c *Client) ticketLocked(ctx context.Context, client pluginapi.HostHTTPClient) (string, error) {
-	now := time.Now()
+	now := c.nowTime()
 	if c.ticket != "" && now.Before(c.ticketExpiresAt.Add(-ticketRefreshLead)) {
 		return c.ticket, nil
+	}
+	if now.Before(c.ticketRetryAt) {
+		if c.ticket != "" && now.Before(c.ticketExpiresAt) {
+			return c.ticket, nil
+		}
+		return "", newTicketBackoffError(c.ticketLastError, c.ticketRetryAt.Sub(now))
 	}
 	if errToken := c.ensureAccessTokenLocked(); errToken != nil {
 		return "", errToken
@@ -408,33 +496,44 @@ func (c *Client) ticketLocked(ctx context.Context, client pluginapi.HostHTTPClie
 	}
 	resp, errDo := client.Do(ctx, pluginapi.HTTPRequest{Method: http.MethodPost, URL: endpoint, Headers: signed, Body: body})
 	if errDo != nil {
-		return "", fmt.Errorf("mint Mirasim device ticket: %w", errDo)
+		errTicket := fmt.Errorf("mint Mirasim device ticket: %w", errDo)
+		c.noteTicketFailureLocked(errTicket, nil, true)
+		return c.staleTicketOrErrorLocked(now, errTicket)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", NewStatusError(resp.StatusCode, resp.Body, resp.Headers)
+		errStatus := NewStatusError(resp.StatusCode, resp.Body, resp.Headers)
+		if resp.StatusCode == http.StatusUnauthorized {
+			c.refreshRequired = true
+		}
+		c.noteTicketFailureLocked(errStatus, resp.Headers, resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError)
+		return c.staleTicketOrErrorLocked(now, errStatus)
 	}
 	var payload struct {
-		Ticket    string `json:"ticket"`
-		ExpiresIn int64  `json:"expiresIn"`
+		Ticket    string   `json:"ticket"`
+		ExpiresIn *float64 `json:"expiresIn"`
+		ExpiresAt *float64 `json:"expiresAt"`
 	}
 	if errDecode := json.Unmarshal(resp.Body, &payload); errDecode != nil {
-		return "", fmt.Errorf("decode Mirasim device ticket: %w", errDecode)
+		errTicket := fmt.Errorf("decode Mirasim device ticket: %w", errDecode)
+		c.noteTicketFailureLocked(errTicket, nil, false)
+		return c.staleTicketOrErrorLocked(now, errTicket)
 	}
 	payload.Ticket = strings.TrimSpace(payload.Ticket)
 	if payload.Ticket == "" {
-		return "", fmt.Errorf("Mirasim device ticket response is missing ticket")
-	}
-	if payload.ExpiresIn <= 0 {
-		payload.ExpiresIn = 900
+		errTicket := fmt.Errorf("Mirasim device ticket response is missing ticket")
+		c.noteTicketFailureLocked(errTicket, nil, false)
+		return c.staleTicketOrErrorLocked(now, errTicket)
 	}
 	c.ticket = payload.Ticket
-	c.ticketExpiresAt = time.Now().Add(time.Duration(payload.ExpiresIn) * time.Second)
+	c.ticketExpiresAt = resolveTicketExpiry(now, payload.ExpiresIn, payload.ExpiresAt)
+	c.resetTicketBackoffLocked()
 	return c.ticket, nil
 }
 
 func (c *Client) ensureAccessTokenLocked() error {
-	now := time.Now()
+	now := c.nowTime()
 	if c.accessToken == "" {
+		c.refreshRequired = true
 		return NewStatusError(http.StatusUnauthorized, []byte(`{"error":"Mirasim access token is missing"}`), nil)
 	}
 	// Opaque access tokens remain usable until the device-session endpoint
@@ -442,6 +541,7 @@ func (c *Client) ensureAccessTokenLocked() error {
 	if c.accessExpiresAt.IsZero() || now.Before(c.accessExpiresAt.Add(-accessRefreshLead)) {
 		return nil
 	}
+	c.refreshRequired = true
 	return NewStatusError(http.StatusUnauthorized, []byte(`{"error":"Mirasim access token requires refresh"}`), nil)
 }
 
@@ -458,15 +558,11 @@ func (c *Client) refreshAccessLocked(ctx context.Context) error {
 		return fmt.Errorf("create Mirasim token refresh request: %w", errRequest)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	transport, _, errTransport := proxyutil.BuildHTTPTransport(c.authProxyURL)
-	if errTransport != nil {
-		return fmt.Errorf("configure Mirasim auth proxy: %w", errTransport)
+	authHTTPClient, closeClient, errClient := newPrivateHTTPClient(c.authProxyURL, 60*time.Second)
+	if errClient != nil {
+		return errClient
 	}
-	authHTTPClient := &http.Client{Timeout: 60 * time.Second}
-	if transport != nil {
-		authHTTPClient.Transport = transport
-		defer transport.CloseIdleConnections()
-	}
+	defer closeClient()
 	resp, errDo := authHTTPClient.Do(request)
 	if errDo != nil {
 		return newRefreshTransportError(errDo)
@@ -494,10 +590,14 @@ func (c *Client) refreshAccessLocked(ctx context.Context) error {
 	if payload.AccessToken == "" {
 		return newRefreshProtocolError("missing_access_token", nil)
 	}
-	now := time.Now().UTC()
+	now := c.nowTime().UTC()
 	c.accessToken = payload.AccessToken
 	c.storage.AccessToken = payload.AccessToken
 	c.storage.PopulateIdentityFromAccessToken()
+	if plan, planExpiresAt := credentials.AccessTokenPlan(payload.AccessToken); plan != "" {
+		c.storage.Plan = plan
+		c.storage.PlanExpiresAt = planExpiresAt
+	}
 	c.storage.RecordTokenTiming(payload.AccessToken, payload.ExpiresIn, now)
 	c.accessExpiresAt = c.storage.AccessTokenExpiry(now)
 	if payload.RefreshToken != "" {
@@ -513,7 +613,7 @@ func (c *Client) loadLocked() error {
 	}
 	c.refreshToken = strings.TrimSpace(c.storage.RefreshToken)
 	c.accessToken = strings.TrimSpace(c.storage.AccessToken)
-	c.accessExpiresAt = c.storage.AccessTokenExpiry(time.Now())
+	c.accessExpiresAt = c.storage.AccessTokenExpiry(c.nowTime())
 	c.loaded = true
 	return nil
 }

@@ -57,7 +57,7 @@ func (p *Provider) RefreshAuth(ctx context.Context, req pluginapi.AuthRefreshReq
 	client := p.pool.Client(*storage)
 	refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 	defer cancelRefresh()
-	if _, errRefresh := client.RefreshAccessWithProxy(refreshCtx, req.Host.ProxyURL); errRefresh != nil {
+	if _, errRefresh := client.RefreshForHost(refreshCtx, req.Host.ProxyURL); errRefresh != nil {
 		return pluginapi.AuthRefreshResponse{}, errRefresh
 	}
 	*storage = client.Storage()
@@ -83,6 +83,10 @@ func (p *Provider) finalizeOAuthStorage(ctx context.Context, settings pluginconf
 	if errValidate := client.Validate(); errValidate != nil {
 		return credentials.Storage{}, errValidate
 	}
+	// Mirasim's official client treats /auth/me as best-effort during login.
+	// Capture its plan state when reachable, but keep the signed relay
+	// validation below as the persistence gate.
+	_, _ = client.RefreshForHost(ctx, proxyURL)
 	if errRemote := client.ValidateRemote(ctx, hostClient, proxyURL); errRemote != nil {
 		p.pool.Forget(storage)
 		return credentials.Storage{}, errRemote

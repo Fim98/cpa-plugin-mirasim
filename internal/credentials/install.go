@@ -33,6 +33,7 @@ func InstallOAuth(storage Storage, accessToken, refreshToken string) (Storage, e
 	storage.RefreshToken = refreshToken
 	storage.DevicePrivateKey = keyPEM
 	storage.RecordTokenTiming(accessToken, 0, time.Now())
+	storage.PopulatePlanFromAccessToken()
 	storage.applyDefaults()
 	if errValidate := storage.Validate(); errValidate != nil {
 		return Storage{}, errValidate

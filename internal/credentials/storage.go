@@ -24,6 +24,10 @@ const CurrentStorageVersion = 1
 
 const opaqueAccessTokenLifetime = 30 * time.Minute
 
+// ProfileRefreshInterval asks CPA to re-enter the plugin refresh lifecycle
+// often enough to notice a Mirasim plan change without polling per request.
+const ProfileRefreshInterval = 5 * time.Minute
+
 // Storage is the provider-owned OAuth payload persisted by CLIProxyAPI in
 // auth-dir.
 type Storage struct {
@@ -35,6 +39,9 @@ type Storage struct {
 	LastRefresh      string         `json:"last_refresh,omitempty"`
 	AccountID        string         `json:"account_id,omitempty"`
 	Email            string         `json:"email,omitempty"`
+	Plan             string         `json:"plan,omitempty"`
+	PlanExpiresAt    *int64         `json:"plan_exp,omitempty"`
+	ProfileCheckedAt string         `json:"profile_checked_at,omitempty"`
 	DevicePrivateKey string         `json:"device_private_key,omitempty"`
 	RelayURL         string         `json:"relay_url,omitempty"`
 	AdminURL         string         `json:"admin_url,omitempty"`
@@ -89,6 +96,7 @@ func Parse(raw []byte, defaults pluginconfig.Settings) (*Storage, error) {
 	}
 	storage.applyDefaults()
 	storage.ensureTokenTiming(time.Now())
+	storage.PopulatePlanFromAccessToken()
 
 	if errValidate := storage.Validate(); errValidate != nil {
 		return nil, errValidate
@@ -105,6 +113,8 @@ func (s *Storage) applyDefaults() {
 	s.LastRefresh = normalizeTimestamp(s.LastRefresh)
 	s.AccountID = strings.TrimSpace(s.AccountID)
 	s.Email = strings.TrimSpace(s.Email)
+	s.Plan = strings.TrimSpace(s.Plan)
+	s.ProfileCheckedAt = normalizeTimestamp(s.ProfileCheckedAt)
 	s.DevicePrivateKey = strings.TrimSpace(s.DevicePrivateKey)
 	s.RelayURL = strings.TrimRight(strings.TrimSpace(s.RelayURL), "/")
 	s.AdminURL = strings.TrimRight(strings.TrimSpace(s.AdminURL), "/")
@@ -154,6 +164,13 @@ func (s Storage) JSON() []byte {
 	setOrDelete(out, "last_refresh", strings.TrimSpace(s.LastRefresh))
 	setOrDelete(out, "account_id", strings.TrimSpace(s.AccountID))
 	setOrDelete(out, "email", strings.TrimSpace(s.Email))
+	setOrDelete(out, "plan", strings.TrimSpace(s.Plan))
+	if s.PlanExpiresAt == nil {
+		delete(out, "plan_exp")
+	} else {
+		out["plan_exp"] = *s.PlanExpiresAt
+	}
+	setOrDelete(out, "profile_checked_at", strings.TrimSpace(s.ProfileCheckedAt))
 	setOrDelete(out, "device_private_key", strings.TrimSpace(s.DevicePrivateKey))
 	setOrDelete(out, "relay_url", strings.TrimSpace(s.RelayURL))
 	setOrDelete(out, "admin_url", strings.TrimSpace(s.AdminURL))
@@ -175,6 +192,23 @@ func (s Storage) AuthData(id, fileName string, nextRefresh time.Time) pluginapi.
 	if strings.TrimSpace(id) == "" {
 		id = fileName
 	}
+	metadata := map[string]any{
+		"storage_version":          CurrentStorageVersion,
+		"type":                     Provider,
+		"auth_kind":                "oauth",
+		"access_token":             strings.TrimSpace(s.AccessToken),
+		"refresh_token":            strings.TrimSpace(s.RefreshToken),
+		"expired":                  strings.TrimSpace(s.Expired),
+		"last_refresh":             strings.TrimSpace(s.LastRefresh),
+		"account_id":               strings.TrimSpace(s.AccountID),
+		"email":                    strings.TrimSpace(s.Email),
+		"plan":                     strings.TrimSpace(s.Plan),
+		"profile_checked_at":       strings.TrimSpace(s.ProfileCheckedAt),
+		"refresh_interval_seconds": int64(ProfileRefreshInterval / time.Second),
+	}
+	if s.PlanExpiresAt != nil {
+		metadata["plan_exp"] = *s.PlanExpiresAt
+	}
 	return pluginapi.AuthData{
 		Provider:    Provider,
 		ID:          id,
@@ -184,17 +218,7 @@ func (s Storage) AuthData(id, fileName string, nextRefresh time.Time) pluginapi.
 		ProxyURL:    strings.TrimSpace(stringValue(s.Raw["proxy_url"])),
 		Disabled:    boolValue(s.Raw["disabled"]),
 		StorageJSON: s.JSON(),
-		Metadata: map[string]any{
-			"storage_version": CurrentStorageVersion,
-			"type":            Provider,
-			"auth_kind":       "oauth",
-			"access_token":    strings.TrimSpace(s.AccessToken),
-			"refresh_token":   strings.TrimSpace(s.RefreshToken),
-			"expired":         strings.TrimSpace(s.Expired),
-			"last_refresh":    strings.TrimSpace(s.LastRefresh),
-			"account_id":      strings.TrimSpace(s.AccountID),
-			"email":           strings.TrimSpace(s.Email),
-		},
+		Metadata:    metadata,
 		Attributes: map[string]string{
 			"auth_kind": "oauth",
 		},
@@ -270,6 +294,68 @@ func (s *Storage) PopulateIdentityFromAccessToken() {
 	s.Email = strings.TrimSpace(s.Email)
 }
 
+// PopulatePlanFromAccessToken seeds plan metadata for a newly installed or
+// older auth record. A successful /auth/me profile check remains authoritative.
+func (s *Storage) PopulatePlanFromAccessToken() {
+	if s == nil || strings.TrimSpace(s.Plan) != "" {
+		return
+	}
+	plan, expiresAt := AccessTokenPlan(s.AccessToken)
+	if plan == "" {
+		return
+	}
+	s.Plan = plan
+	s.PlanExpiresAt = cloneInt64(expiresAt)
+}
+
+// AccessTokenPlan returns the Mirasim plan claims carried by a JWT. Opaque or
+// malformed tokens simply have no locally observable plan.
+func AccessTokenPlan(token string) (string, *int64) {
+	claims := jwtClaims(token)
+	plan, _ := claims["plan"].(string)
+	plan = strings.TrimSpace(plan)
+	if plan == "" {
+		return "", nil
+	}
+	var expiresAt int64
+	switch value := claims["plan_exp"].(type) {
+	case float64:
+		if value > 0 && value == float64(int64(value)) {
+			expiresAt = int64(value)
+		}
+	case json.Number:
+		expiresAt, _ = value.Int64()
+	}
+	if expiresAt <= 0 {
+		return plan, nil
+	}
+	return plan, &expiresAt
+}
+
+// RecordProfile persists the non-secret account state returned by /auth/me.
+func (s *Storage) RecordProfile(email, plan string, planExpiresAt *int64, checkedAt time.Time) {
+	if s == nil {
+		return
+	}
+	if email = strings.TrimSpace(email); email != "" {
+		s.Email = email
+	}
+	if plan = strings.TrimSpace(plan); plan != "" {
+		s.Plan = plan
+		s.PlanExpiresAt = cloneInt64(planExpiresAt)
+	}
+	if checkedAt.IsZero() {
+		checkedAt = time.Now()
+	}
+	s.ProfileCheckedAt = checkedAt.UTC().Format(time.RFC3339)
+}
+
+// ProfileCheckTime reports the last successful /auth/me observation.
+func (s Storage) ProfileCheckTime() time.Time {
+	parsed, _ := parseTimestamp(s.ProfileCheckedAt)
+	return parsed
+}
+
 // DefaultAuthFileName mirrors CPA's account-specific OAuth files. If Mirasim
 // omits account claims, the generated device identity provides a stable,
 // collision-resistant fallback for this login.
@@ -330,7 +416,9 @@ func jwtClaims(token string) map[string]any {
 		return nil
 	}
 	var claims map[string]any
-	if errJSON := json.Unmarshal(payload, &claims); errJSON != nil {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if errJSON := decoder.Decode(&claims); errJSON != nil {
 		return nil
 	}
 	return claims
@@ -466,6 +554,14 @@ func cloneMap(source map[string]any) map[string]any {
 		out[key] = value
 	}
 	return out
+}
+
+func cloneInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func boolValue(value any) bool {

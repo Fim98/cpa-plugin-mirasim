@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	pluginconfig "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/config"
@@ -82,6 +83,7 @@ func TestRefreshAuthReturnsRotatedCredentialsForHostPersistence(t *testing.T) {
 	if errInstall != nil {
 		t.Fatal(errInstall)
 	}
+	storage.RecordProfile("", "", nil, time.Now())
 	provider := New(pluginconfig.Defaults(), mirasim.NewPool())
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()

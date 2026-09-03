@@ -344,6 +344,236 @@ func TestDeviceSessionUnauthorizedDoesNotRefreshInsideRequest(t *testing.T) {
 	if client.Storage().AccessToken != accessToken {
 		t.Fatal("request path mutated provider storage instead of delegating refresh to CPA")
 	}
+	if !client.refreshRequired {
+		t.Fatal("device-session rejection did not mark the access token for CPA refresh")
+	}
+}
+
+func TestDeviceTicketMintBackoffHonorsRetryAfter(t *testing.T) {
+	storage, _, _ := newTestStorage(t, futureJWT())
+	client := NewClient(storage)
+	now := time.Now().UTC()
+	client.now = func() time.Time { return now }
+	calls := 0
+	host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		parsed, _ := url.Parse(req.URL)
+		if parsed.Path != sessionPath {
+			t.Fatalf("unexpected request path %s", parsed.Path)
+		}
+		calls++
+		headers := make(http.Header)
+		headers.Set("Retry-After", "12")
+		return pluginapi.HTTPResponse{StatusCode: http.StatusServiceUnavailable, Headers: headers, Body: []byte(`{"error":"busy"}`)}, nil
+	}}
+
+	_, firstErr := client.Do(context.Background(), host, http.MethodPost, "/v1/messages", nil, nil, []byte(`{"model":"claude-sonnet-5"}`))
+	if firstErr == nil || calls != 1 {
+		t.Fatalf("first mint error = %v, calls = %d", firstErr, calls)
+	}
+	_, secondErr := client.Do(context.Background(), host, http.MethodPost, "/v1/messages", nil, nil, []byte(`{"model":"claude-sonnet-5"}`))
+	backoff, ok := secondErr.(*TicketBackoffError)
+	if !ok || backoff.StatusCode() != http.StatusServiceUnavailable || calls != 1 {
+		t.Fatalf("backoff error = %#v, calls = %d", secondErr, calls)
+	}
+	if retry := backoff.RetryAfter(); retry == nil || *retry != 12*time.Second {
+		t.Fatalf("backoff RetryAfter = %v", retry)
+	}
+	now = now.Add(12 * time.Second)
+	_, _ = client.Do(context.Background(), host, http.MethodPost, "/v1/messages", nil, nil, []byte(`{"model":"claude-sonnet-5"}`))
+	if calls != 2 {
+		t.Fatalf("mint calls after retry window = %d, want 2", calls)
+	}
+}
+
+func TestDeviceTicketMintBackoffIsExponentialAndBounded(t *testing.T) {
+	client := NewClient(credentials.Storage{})
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	client.now = func() time.Time { return now }
+	wants := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second}
+	for index, want := range wants {
+		client.noteTicketFailureLocked(fmt.Errorf("failure %d", index+1), nil, true)
+		if got := client.ticketRetryAt.Sub(now); got != want {
+			t.Fatalf("failure %d backoff = %s, want %s", index+1, got, want)
+		}
+		now = client.ticketRetryAt
+	}
+}
+
+func TestDeviceTicketKeepsStillValidTicketDuringRenewalBackoff(t *testing.T) {
+	storage, _, _ := newTestStorage(t, futureJWT())
+	client := NewClient(storage)
+	now := time.Now().UTC()
+	client.now = func() time.Time { return now }
+	ticketCalls := 0
+	relayCalls := 0
+	host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		parsed, _ := url.Parse(req.URL)
+		if parsed.Path == sessionPath {
+			ticketCalls++
+			if ticketCalls == 1 {
+				return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"ticket":"still-valid","expiresIn":180}`)}, nil
+			}
+			headers := make(http.Header)
+			headers.Set("Retry-After", "12")
+			return pluginapi.HTTPResponse{StatusCode: http.StatusServiceUnavailable, Headers: headers, Body: []byte(`{"error":"busy"}`)}, nil
+		}
+		relayCalls++
+		if req.Headers.Get("Authorization") != "Bearer still-valid" {
+			t.Errorf("relay authorization = %q", req.Headers.Get("Authorization"))
+		}
+		return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"ok":true}`)}, nil
+	}}
+
+	if _, errDo := client.Do(context.Background(), host, http.MethodPost, "/v1/messages", nil, nil, []byte(`{"model":"claude-sonnet-5"}`)); errDo != nil {
+		t.Fatal(errDo)
+	}
+	now = now.Add(time.Minute)
+	if _, errDo := client.Do(context.Background(), host, http.MethodPost, "/v1/messages", nil, nil, []byte(`{"model":"claude-sonnet-5"}`)); errDo != nil {
+		t.Fatal(errDo)
+	}
+	if _, errDo := client.Do(context.Background(), host, http.MethodPost, "/v1/messages", nil, nil, []byte(`{"model":"claude-sonnet-5"}`)); errDo != nil {
+		t.Fatal(errDo)
+	}
+	if ticketCalls != 2 || relayCalls != 3 {
+		t.Fatalf("ticket calls = %d, relay calls = %d", ticketCalls, relayCalls)
+	}
+}
+
+func TestRelayTicketRefusalFloorAvoidsRemintStorm(t *testing.T) {
+	storage, _, _ := newTestStorage(t, futureJWT())
+	client := NewClient(storage)
+	now := time.Now().UTC()
+	client.now = func() time.Time { return now }
+	ticketCalls := 0
+	relayCalls := 0
+	host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		parsed, _ := url.Parse(req.URL)
+		if parsed.Path == sessionPath {
+			ticketCalls++
+			return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(fmt.Sprintf(`{"ticket":"ticket-%d","expiresIn":900}`, ticketCalls))}, nil
+		}
+		relayCalls++
+		return pluginapi.HTTPResponse{StatusCode: http.StatusUnauthorized, Headers: make(http.Header), Body: []byte(`{"error":"rejected"}`)}, nil
+	}}
+
+	resp, errFirst := client.Do(context.Background(), host, http.MethodPost, "/v1/messages", nil, nil, []byte(`{"model":"claude-sonnet-5"}`))
+	if errFirst != nil || resp.StatusCode != http.StatusUnauthorized || ticketCalls != 2 || relayCalls != 2 {
+		t.Fatalf("first refusal: response=%d error=%v ticket_calls=%d relay_calls=%d", resp.StatusCode, errFirst, ticketCalls, relayCalls)
+	}
+	_, errSecond := client.Do(context.Background(), host, http.MethodPost, "/v1/messages", nil, nil, []byte(`{"model":"claude-sonnet-5"}`))
+	backoff, ok := errSecond.(*TicketBackoffError)
+	if !ok || backoff.StatusCode() != http.StatusUnauthorized || ticketCalls != 2 || relayCalls != 3 {
+		t.Fatalf("refusal floor: error=%#v ticket_calls=%d relay_calls=%d", errSecond, ticketCalls, relayCalls)
+	}
+	if retry := backoff.RetryAfter(); retry == nil || *retry != ticketRefusalFloor {
+		t.Fatalf("refusal RetryAfter = %v", retry)
+	}
+}
+
+func TestDeviceTicketAcceptsAbsoluteExpiry(t *testing.T) {
+	storage, _, _ := newTestStorage(t, futureJWT())
+	client := NewClient(storage)
+	now := time.Now().UTC().Truncate(time.Second)
+	client.now = func() time.Time { return now }
+	host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		parsed, _ := url.Parse(req.URL)
+		if parsed.Path == sessionPath {
+			return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(fmt.Sprintf(`{"ticket":"absolute","expiresAt":%d}`, now.Add(10*time.Minute).Unix()))}, nil
+		}
+		return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"ok":true}`)}, nil
+	}}
+	if _, errDo := client.Do(context.Background(), host, http.MethodPost, "/v1/messages", nil, nil, []byte(`{"model":"claude-sonnet-5"}`)); errDo != nil {
+		t.Fatal(errDo)
+	}
+	if !client.ticketExpiresAt.Equal(now.Add(10 * time.Minute)) {
+		t.Fatalf("ticket expiry = %s", client.ticketExpiresAt)
+	}
+}
+
+func TestDeviceTicketRejectsUnrepresentableExpiry(t *testing.T) {
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	huge := 1e300
+	if got := resolveTicketExpiry(now, &huge, &huge); !got.Equal(now.Add(ticketDefaultTTL)) {
+		t.Fatalf("unrepresentable expiry = %s", got)
+	}
+}
+
+func TestRefreshForHostRefreshesWhenAuthoritativePlanChanges(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	oldAccess := planJWT(now.Add(time.Hour), "starter", 1789000000)
+	newAccess := planJWT(now.Add(2*time.Hour), "pro", 1789500000)
+	storage, _, _ := newTestStorage(t, oldAccess)
+	storage.PopulatePlanFromAccessToken()
+	profileCalls := 0
+	refreshCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/me":
+			profileCalls++
+			if r.Header.Get("Authorization") != "Bearer "+oldAccess && r.Header.Get("Authorization") != "Bearer "+newAccess {
+				t.Errorf("profile authorization = %q", r.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"email": "profile@example.com", "plan": "pro", "plan_exp": int64(1789500000)})
+		case "/auth/refresh":
+			refreshCalls++
+			var payload map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			if payload["refresh_token"] != "refresh-token" {
+				t.Errorf("refresh token = %q", payload["refresh_token"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": newAccess, "refresh_token": "rotated-refresh", "expires_in": 7200})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	storage.AdminURL = server.URL
+	client := NewClient(storage)
+	client.now = func() time.Time { return now }
+
+	if _, errRefresh := client.RefreshForHost(context.Background(), "direct"); errRefresh != nil {
+		t.Fatalf("RefreshForHost() error = %v", errRefresh)
+	}
+	updated := client.Storage()
+	if profileCalls != 1 || refreshCalls != 1 || updated.AccessToken != newAccess || updated.RefreshToken != "rotated-refresh" || updated.Plan != "pro" || updated.PlanExpiresAt == nil || *updated.PlanExpiresAt != 1789500000 || updated.ProfileCheckTime().IsZero() {
+		t.Fatalf("profile calls = %d, refresh calls = %d, storage = %#v", profileCalls, refreshCalls, updated)
+	}
+
+	now = now.Add(credentials.ProfileRefreshInterval)
+	if _, errRefresh := client.RefreshForHost(context.Background(), "direct"); errRefresh != nil {
+		t.Fatalf("second RefreshForHost() error = %v", errRefresh)
+	}
+	if profileCalls != 2 || refreshCalls != 1 {
+		t.Fatalf("unchanged profile caused another token refresh: profile=%d refresh=%d", profileCalls, refreshCalls)
+	}
+}
+
+func TestRefreshForHostTreatsProfileFailureAsBestEffort(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	storage, _, _ := newTestStorage(t, planJWT(now.Add(time.Hour), "starter", 1789000000))
+	refreshCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/me":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case "/auth/refresh":
+			refreshCalls++
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	storage.AdminURL = server.URL
+	client := NewClient(storage)
+	client.now = func() time.Time { return now }
+
+	if _, errRefresh := client.RefreshForHost(context.Background(), "direct"); errRefresh != nil {
+		t.Fatalf("RefreshForHost() profile failure = %v", errRefresh)
+	}
+	if refreshCalls != 0 || !client.Storage().ProfileCheckTime().IsZero() {
+		t.Fatalf("profile failure refreshed token or advanced profile timestamp: refresh=%d storage=%#v", refreshCalls, client.Storage())
+	}
 }
 
 func TestRefreshAccessRotatesInMemoryStorageAndDoesNotLeakErrorBody(t *testing.T) {
@@ -416,13 +646,18 @@ func TestRefreshErrorClassifiesRateLimitWithoutLeakingBody(t *testing.T) {
 	}
 }
 
-func TestOpaqueTokenSchedulesConservativeRefresh(t *testing.T) {
+func TestNextRefreshSchedulesProfileCheckBeforeOpaqueTokenRefresh(t *testing.T) {
 	storage, _, _ := newTestStorage(t, "opaque-access-token")
 	client := NewClient(storage)
 	now := time.Now()
 	next := client.NextRefreshAfter(now)
-	if next.Before(now.Add(27*time.Minute)) || next.After(now.Add(29*time.Minute)) {
-		t.Fatalf("NextRefreshAfter = %s, want about 28 minutes", next)
+	if next.Before(now) || next.After(now.Add(time.Second)) {
+		t.Fatalf("initial NextRefreshAfter = %s, want an immediate profile check", next)
+	}
+	storage.RecordProfile("", "", nil, now)
+	next = NewClient(storage).NextRefreshAfter(now)
+	if next.Before(now.Add(credentials.ProfileRefreshInterval-time.Second)) || next.After(now.Add(credentials.ProfileRefreshInterval+time.Second)) {
+		t.Fatalf("profile-aware NextRefreshAfter = %s", next)
 	}
 }
 
@@ -666,6 +901,12 @@ func jwtWithExpiry(expiry time.Time) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
 	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, expiry.Unix())))
 	return header + "." + payload + ".signature"
+}
+
+func planJWT(expiry time.Time, plan string, planExpiresAt int64) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload, _ := json.Marshal(map[string]any{"sub": "account", "exp": expiry.Unix(), "plan": plan, "plan_exp": planExpiresAt})
+	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
 }
 
 func TestStatusErrorLimitsDisplayedBody(t *testing.T) {

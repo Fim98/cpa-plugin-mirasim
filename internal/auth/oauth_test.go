@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -20,7 +21,9 @@ import (
 
 func TestManagementOAuthReturnsSelfContainedAuthJSONWithoutExternalWrites(t *testing.T) {
 	settings := pluginconfig.Defaults()
-	settings.AdminURL = "https://auth.mirasim.example"
+	profileServer := newOAuthProfileServer(t)
+	defer profileServer.Close()
+	settings.AdminURL = profileServer.URL
 	settings.OAuthPublicBaseURL = "https://cpa.example/proxy"
 	provider := New(settings, mirasim.NewPool())
 	provider.ConfigureOAuthResourceBasePath("/v0/resource/plugins/mirasim-id")
@@ -155,7 +158,11 @@ func TestStartLoginRequiresHTTPSForPublicNonLoopbackURL(t *testing.T) {
 }
 
 func TestManagementOAuthRejectsCredentialsThatFailRemoteValidation(t *testing.T) {
-	provider := New(pluginconfig.Defaults(), mirasim.NewPool())
+	settings := pluginconfig.Defaults()
+	profileServer := newOAuthProfileServer(t)
+	defer profileServer.Close()
+	settings.AdminURL = profileServer.URL
+	provider := New(settings, mirasim.NewPool())
 	provider.ConfigureOAuthResourceBasePath("/v0/resource/plugins/mirasim-id")
 	started, errStart := provider.StartLogin(context.Background(), pluginapi.AuthLoginStartRequest{BaseURL: "http://127.0.0.1:8317/callback"})
 	if errStart != nil {
@@ -174,6 +181,18 @@ func TestManagementOAuthRejectsCredentialsThatFailRemoteValidation(t *testing.T)
 	if strings.Contains(polled.Message, "PRIVATE_UPSTREAM_DETAIL") || !strings.Contains(polled.Message, "HTTP 401") {
 		t.Fatalf("unsafe or incomplete validation error = %q", polled.Message)
 	}
+}
+
+func newOAuthProfileServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/auth/me" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			t.Errorf("profile request = %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"email": "user@example.com"})
+	}))
 }
 
 type oauthValidationClient struct {

@@ -80,6 +80,42 @@ func TestPopulateIdentityUsesStableJWTClaims(t *testing.T) {
 	}
 }
 
+func TestPlanClaimsAndProfileRoundTrip(t *testing.T) {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"account","exp":1788440000,"plan":"starter","plan_exp":1789000000}`))
+	storage, errInstall := InstallOAuth(Storage{}, header+"."+payload+".signature", "refresh")
+	if errInstall != nil {
+		t.Fatal(errInstall)
+	}
+	if storage.Plan != "starter" || storage.PlanExpiresAt == nil || *storage.PlanExpiresAt != 1789000000 {
+		t.Fatalf("JWT plan = %#v", storage)
+	}
+	checkedAt := time.Date(2026, 9, 3, 14, 0, 0, 0, time.UTC)
+	profileExpiry := int64(1789500000)
+	storage.RecordProfile("profile@example.com", "pro", &profileExpiry, checkedAt)
+
+	parsed, errParse := Parse(storage.JSON(), pluginconfig.Defaults())
+	if errParse != nil {
+		t.Fatal(errParse)
+	}
+	if parsed.Plan != "pro" || parsed.PlanExpiresAt == nil || *parsed.PlanExpiresAt != profileExpiry || !parsed.ProfileCheckTime().Equal(checkedAt) || parsed.Email != "profile@example.com" {
+		t.Fatalf("profile round trip = %#v", parsed)
+	}
+	auth := parsed.AuthData("mirasim.json", "mirasim.json", time.Time{})
+	if auth.Metadata["plan"] != "pro" || auth.Metadata["plan_exp"] != profileExpiry || auth.Metadata["refresh_interval_seconds"] != int64(ProfileRefreshInterval/time.Second) {
+		t.Fatalf("runtime plan metadata = %#v", auth.Metadata)
+	}
+}
+
+func TestAccessTokenPlanRejectsNonStringPlanClaim(t *testing.T) {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"plan":123,"plan_exp":1789000000}`))
+	plan, expiresAt := AccessTokenPlan(header + "." + payload + ".signature")
+	if plan != "" || expiresAt != nil {
+		t.Fatalf("non-string plan claim = %q, %v", plan, expiresAt)
+	}
+}
+
 func TestInstallOAuthPreservesValidEmbeddedDeviceKey(t *testing.T) {
 	keyPEM := testDeviceKey(t)
 	storage, errInstall := InstallOAuth(Storage{DevicePrivateKey: keyPEM}, "access", "refresh")

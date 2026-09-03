@@ -11,7 +11,9 @@ The implementation follows the current [CLIProxyAPI plugin contract](https://git
 - Returns one self-contained provider auth JSON after OAuth, including the access token, refresh token, and generated Ed25519 private key; CLIProxyAPI persists it under its configured `auth-dir`, matching its built-in providers and the Gemini CLI plugin.
 - Versions that self-contained OAuth JSON with `storage_version`; unversioned self-contained records migrate lazily through CPA's normal refresh save, while path-only credential records remain intentionally unsupported.
 - Exposes OAuth tokens plus conventional `expired` and `last_refresh` timestamps in CPA's runtime auth metadata so scheduled and 401-triggered refreshes use the host's per-auth lock, persistence, and retry lifecycle. `RefreshAuth` returns rotated credentials for CPA to save atomically.
-- Mints and caches 15-minute device tickets through `POST /v1/device/session`.
+- Tracks `plan` and `plan_exp` from the access token and a best-effort five-minute `GET /auth/me` profile check. A newly changed authoritative mismatch requests one CPA-owned token refresh without looping on the same unchanged result.
+- Mints and caches device tickets through `POST /v1/device/session`, refreshes them two minutes early, accepts `expiresIn` or `expiresAt`, and uses a ten-minute fallback lifetime.
+- Backs off failed ticket mints exponentially up to 30 seconds (or a bounded `Retry-After`), keeps a still-valid ticket during proactive renewal failure, and applies a 30-second relay-refusal floor.
 - Signs requests with the `mrs-sig-v2` Ed25519 protocol and binds the current bearer credential, client version, metadata, and body.
 - Seals normal relay-request signature and session metadata into `x-mirasim-enc` with `mrs-seal-v1` (X25519, HKDF-SHA256, and ChaCha20-Poly1305).
 - Removes a leading `mirasim/` model prefix and preserves Claude `output_config`, including adaptive effort.
@@ -99,8 +101,8 @@ The generated `.h` file is not needed by CLIProxyAPI. Tagged releases are built 
 Copy the platform library into CLIProxyAPI's plugin directory. Both unversioned and versioned names are supported, for example:
 
 - `plugins/mirasim.dll`
-- `plugins/mirasim-v0.6.0.dll`
-- `plugins/linux/amd64/mirasim-v0.6.0.so`
+- `plugins/mirasim-v0.7.0.dll`
+- `plugins/linux/amd64/mirasim-v0.7.0.so`
 
 Enable dynamic plugins and configure Mirasim in CLIProxyAPI's `config.yaml`:
 
@@ -136,7 +138,7 @@ The generic CPA callback stores authorization codes only, so this plugin uses it
 
 For a remote Docker installation, the public callback URL must reach the same CPA container through the reverse proxy. Do not set `oauth-public-base-url` to `127.0.0.1` unless the browser and CPA actually run on the same machine.
 
-If the CPA container cannot connect to `auth.mirasim.ai`, configure CPA's top-level `proxy-url`. The plugin remembers that host proxy for private `/auth/refresh` calls while keeping the refresh-token body outside CPA's request-recording bridge.
+If the CPA container cannot connect to `auth.mirasim.ai`, configure CPA's top-level `proxy-url`. The plugin remembers that host proxy for private `/auth/me` and `/auth/refresh` calls while keeping bearer credentials outside CPA's request-recording bridge.
 
 ### Command line
 
@@ -161,6 +163,9 @@ OAuth produces the following auth shape. Secret values are abbreviated below:
   "last_refresh": "2026-09-03T12:00:00Z",
   "account_id": "<validated-account-id-if-present>",
   "email": "<validated-email-if-present>",
+  "plan": "<current-plan-if-present>",
+  "plan_exp": 1789500000,
+  "profile_checked_at": "2026-09-03T12:00:00Z",
   "device_private_key": "<Ed25519-PKCS8-PEM>",
   "relay_url": "https://relay.mirasim.ai",
   "admin_url": "https://auth.mirasim.ai",
@@ -168,6 +173,8 @@ OAuth produces the following auth shape. Secret values are abbreviated below:
   "auth_kind": "oauth"
 }
 ```
+
+The three profile fields are optional. JWT claims seed them at login, and a successful `/auth/me` check updates them through CPA's normal auth refresh and atomic save path. Profile lookup is best-effort and does not invalidate an otherwise working login.
 
 There is no directory-path fallback or import path. After upgrading from a path-only release, delete the obsolete Mirasim auth entry and complete OAuth login again.
 
@@ -229,12 +236,12 @@ The frontend integration and its upgrade boundary are documented in [ADR 0014](d
 - Native plugins are trusted in-process code.
 - The CPA auth file is now the source of truth and contains bearer tokens plus the Ed25519 private key. Persist and back up `auth-dir`, restrict access to the CPA service account, and never commit, upload, or attach these files to an issue.
 - Relay requests use CLIProxyAPI's host HTTP client so host transport and request lifecycle policies remain active.
-- Token refresh uses a private 60-second HTTP client because sending the refresh-token JSON body through the host request logger could persist a long-lived secret. It honors CPA's configured upstream proxy (or standard proxy environment variables when none is configured) without persisting the proxy URL in Mirasim auth JSON.
+- Account-profile lookup and token refresh use private timeout-bounded HTTP clients because their bearer headers or refresh-token JSON body must not enter the host request logger. They honor CPA's configured upstream proxy (or standard proxy environment variables when none is configured) without persisting the proxy URL in Mirasim auth JSON.
 - Mirasim's OAuth service returns bearer tokens in callback query parameters. CLIProxyAPI masks token-named query values in its own logs; any reverse proxy in front of CPA must also redact or omit callback query strings.
 - Incoming `Authorization`, `Proxy-Authorization`, and `X-Api-Key` values are removed before Mirasim authentication headers are injected.
 - Incoming `x-mirasim-*` values are removed, and ordinary relay metadata is sent only inside `x-mirasim-enc`.
 
-The provider boundaries are recorded in [ADR 0001](docs/decisions/0001-mirasim-provider-boundaries.md), the v2 authentication design in [ADR 0003](docs/decisions/0003-adopt-mirasim-v2-authentication-envelope.md), the quota-page integration in [ADR 0004](docs/decisions/0004-integrate-quota-with-management-center.md), the OAuth design in [ADR 0005](docs/decisions/0005-implement-mirasim-oauth-login.md), the CPA-managed credential-storage decision in [ADR 0006](docs/decisions/0006-store-credentials-in-cpa-auth-json.md), account-specific validated persistence in [ADR 0009](docs/decisions/0009-validate-oauth-and-name-auths-by-account.md), the thinking boundary in [ADR 0010](docs/decisions/0010-apply-thinking-at-the-mirasim-wire-boundary.md), versioned storage/model metadata in [ADR 0011](docs/decisions/0011-version-oauth-storage-and-publish-model-capabilities.md), and GPT publication in [ADR 0012](docs/decisions/0012-publish-claude-and-gpt-models.md).
+The provider boundaries are recorded in [ADR 0001](docs/decisions/0001-mirasim-provider-boundaries.md), the v2 authentication design in [ADR 0003](docs/decisions/0003-adopt-mirasim-v2-authentication-envelope.md), the quota-page integration in [ADR 0004](docs/decisions/0004-integrate-quota-with-management-center.md), the OAuth design in [ADR 0005](docs/decisions/0005-implement-mirasim-oauth-login.md), the CPA-managed refresh lifecycle in [ADR 0007](docs/decisions/0007-delegate-token-refresh-to-cpa.md), current model routing and metadata in [ADR 0013](docs/decisions/0013-route-published-models-by-family.md) through [ADR 0017](docs/decisions/0017-align-relay-headers-and-codex-routes.md), and ticket/plan behavior in [ADR 0018](docs/decisions/0018-back-off-tickets-and-track-account-plans.md).
 
 ## License
 
