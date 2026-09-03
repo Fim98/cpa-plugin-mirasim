@@ -7,12 +7,7 @@ import (
 )
 
 func TestBuildDeclaresProviderCapabilities(t *testing.T) {
-	built := Build([]byte(`
-plugins:
-  configs:
-    mirasim:
-      credential-dir: .mirasim-credentials
-`))
+	built := Build(nil)
 	if built.Metadata.Name != "Mirasim Provider" || built.Metadata.GitHubRepository == "" {
 		t.Fatalf("metadata = %#v", built.Metadata)
 	}
@@ -25,5 +20,10 @@ plugins:
 	}
 	if len(caps.ExecutorInputFormats) != 5 || len(caps.ExecutorOutputFormats) != 5 {
 		t.Fatalf("formats = %#v / %#v", caps.ExecutorInputFormats, caps.ExecutorOutputFormats)
+	}
+	for _, field := range built.Metadata.ConfigFields {
+		if field.Name == "credential-dir" {
+			t.Fatal("OAuth-only plugin still exposes credential-dir")
+		}
 	}
 }

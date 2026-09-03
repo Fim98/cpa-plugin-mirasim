@@ -13,8 +13,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,9 +64,7 @@ func (p *Pool) Client(storage credentials.Storage) *Client {
 	return client
 }
 
-// Forget drops a cached client after its on-disk OAuth material is replaced.
-// Existing in-flight requests keep their own client; future requests reload the
-// newly installed tokens and key.
+// Forget drops a cached client after an auth identity is replaced.
 func (p *Pool) Forget(storage credentials.Storage) {
 	if p == nil {
 		return
@@ -101,15 +97,17 @@ func NewClient(storage credentials.Storage) *Client {
 }
 
 func (c *Client) Storage() credentials.Storage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.storage
 }
 
 func (c *Client) Validate() error {
-	if errFiles := c.storage.ValidateFiles(); errFiles != nil {
-		return errFiles
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if errStorage := c.storage.Validate(); errStorage != nil {
+		return errStorage
+	}
 	if errLoad := c.loadLocked(); errLoad != nil {
 		return errLoad
 	}
@@ -375,13 +373,6 @@ func (c *Client) ensureAccessTokenLocked(ctx context.Context) error {
 }
 
 func (c *Client) refreshAccessLocked(ctx context.Context) error {
-	// Another process may rotate the project-local refresh token. Always prefer
-	// the latest complete value on disk before using the cached copy.
-	latest, errLatest := c.readCredentialLocked("refresh-token.txt", true)
-	if errLatest != nil {
-		return errLatest
-	}
-	c.refreshToken = latest
 	if strings.TrimSpace(c.refreshToken) == "" {
 		return fmt.Errorf("Mirasim refresh token is missing")
 	}
@@ -429,16 +420,12 @@ func (c *Client) refreshAccessLocked(ctx context.Context) error {
 	if payload.AccessToken == "" {
 		return fmt.Errorf("Mirasim token refresh response is missing access_token")
 	}
-	if errWrite := c.writeCredentialLocked("access-token.txt", payload.AccessToken); errWrite != nil {
-		return errWrite
-	}
 	c.accessToken = payload.AccessToken
+	c.storage.AccessToken = payload.AccessToken
 	c.accessExpiresAt = jwtExpiry(payload.AccessToken)
 	if payload.RefreshToken != "" {
-		if errWrite := c.writeCredentialLocked("refresh-token.txt", payload.RefreshToken); errWrite != nil {
-			return errWrite
-		}
 		c.refreshToken = payload.RefreshToken
+		c.storage.RefreshToken = payload.RefreshToken
 	}
 	return nil
 }
@@ -447,17 +434,9 @@ func (c *Client) loadLocked() error {
 	if c.loaded {
 		return nil
 	}
-	refreshToken, errRefresh := c.readCredentialLocked("refresh-token.txt", true)
-	if errRefresh != nil {
-		return errRefresh
-	}
-	accessToken, errAccess := c.readCredentialLocked("access-token.txt", false)
-	if errAccess != nil {
-		return errAccess
-	}
-	c.refreshToken = refreshToken
-	c.accessToken = accessToken
-	c.accessExpiresAt = jwtExpiry(accessToken)
+	c.refreshToken = strings.TrimSpace(c.storage.RefreshToken)
+	c.accessToken = strings.TrimSpace(c.storage.AccessToken)
+	c.accessExpiresAt = jwtExpiry(c.accessToken)
 	c.loaded = true
 	return nil
 }
@@ -466,11 +445,7 @@ func (c *Client) loadSignerLocked() error {
 	if len(c.privateKey) != 0 {
 		return nil
 	}
-	raw, errRead := c.readCredentialLocked("device-private-key.pem", true)
-	if errRead != nil {
-		return errRead
-	}
-	block, _ := pem.Decode([]byte(raw))
+	block, _ := pem.Decode([]byte(strings.TrimSpace(c.storage.DevicePrivateKey)))
 	if block == nil {
 		return fmt.Errorf("decode Mirasim device private key PEM")
 	}
@@ -493,43 +468,6 @@ func (c *Client) loadSignerLocked() error {
 	c.deviceID = base64.RawURLEncoding.EncodeToString(digest[:])[:22]
 	return nil
 }
-
-func (c *Client) readCredentialLocked(name string, required bool) (string, error) {
-	path := filepath.Join(c.storage.CredentialDir, name)
-	raw, errRead := os.ReadFile(path)
-	if errRead != nil {
-		if !required && os.IsNotExist(errRead) {
-			return "", nil
-		}
-		return "", fmt.Errorf("read Mirasim credential %s: %w", path, errRead)
-	}
-	value := strings.TrimSpace(string(raw))
-	if required && value == "" {
-		return "", fmt.Errorf("Mirasim credential is empty: %s", path)
-	}
-	return value, nil
-}
-
-func (c *Client) writeCredentialLocked(name, value string) error {
-	path := filepath.Join(c.storage.CredentialDir, name)
-	file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if errOpen != nil {
-		return fmt.Errorf("write Mirasim credential %s: %w", path, errOpen)
-	}
-	_, errWrite := io.WriteString(file, strings.TrimSpace(value)+"\n")
-	errClose := file.Close()
-	if errWrite != nil {
-		return fmt.Errorf("write Mirasim credential %s: %w", path, errWrite)
-	}
-	if errClose != nil {
-		return fmt.Errorf("close Mirasim credential %s: %w", path, errClose)
-	}
-	if errChmod := os.Chmod(path, 0o600); errChmod != nil && os.PathSeparator != '\\' {
-		return fmt.Errorf("set Mirasim credential permissions %s: %w", path, errChmod)
-	}
-	return nil
-}
-
 func (c *Client) endpoint(requestPath string, query url.Values) (string, string, error) {
 	base, errParse := url.Parse(c.storage.RelayURL)
 	if errParse != nil || base.Scheme == "" || base.Host == "" {

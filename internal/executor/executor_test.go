@@ -11,8 +11,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -284,23 +282,14 @@ func executorTestStorage(t *testing.T) credentials.Storage {
 	if errMarshal != nil {
 		t.Fatal(errMarshal)
 	}
-	dir := t.TempDir()
 	expiryPayload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, time.Now().Add(time.Hour).Unix())))
-	files := map[string][]byte{
-		"refresh-token.txt":      []byte("refresh-token\n"),
-		"access-token.txt":       []byte("header." + expiryPayload + ".signature\n"),
-		"device-private-key.pem": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}),
-	}
-	for name, data := range files {
-		if errWrite := os.WriteFile(filepath.Join(dir, name), data, 0o600); errWrite != nil {
-			t.Fatal(errWrite)
-		}
-	}
 	return credentials.Storage{
-		Type:          credentials.Provider,
-		CredentialDir: dir,
-		RelayURL:      "https://relay.example",
-		AdminURL:      "https://admin.example",
-		ClientVersion: "test-client",
+		Type:             credentials.Provider,
+		AccessToken:      "header." + expiryPayload + ".signature",
+		RefreshToken:     "refresh-token",
+		DevicePrivateKey: strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}))),
+		RelayURL:         "https://relay.example",
+		AdminURL:         "https://admin.example",
+		ClientVersion:    "test-client",
 	}
 }

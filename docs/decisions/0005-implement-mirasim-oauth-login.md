@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-09-02
+Accepted — 2026-09-02. The credential-persistence portions are superseded by [ADR 0006](0006-store-credentials-in-cpa-auth-json.md) as of 2026-09-03.
 
 ## Context
 

@@ -32,6 +32,7 @@ func (p *Provider) ParseAuth(_ context.Context, req pluginapi.AuthParseRequest) 
 	if storage == nil {
 		return pluginapi.AuthParseResponse{}, nil
 	}
+	p.pool.Forget(*storage)
 	client := p.pool.Client(*storage)
 	if errProxy := client.SetAuthProxy(req.Host.ProxyURL); errProxy != nil {
 		return pluginapi.AuthParseResponse{Handled: true}, errProxy
@@ -55,8 +56,14 @@ func (p *Provider) RefreshAuth(ctx context.Context, req pluginapi.AuthRefreshReq
 	if _, errRefresh := client.RefreshAccessWithProxy(ctx, req.Host.ProxyURL); errRefresh != nil {
 		return pluginapi.AuthRefreshResponse{}, errRefresh
 	}
+	*storage = client.Storage()
 	next := client.NextRefreshAfter(time.Now())
 	auth := storage.AuthData(req.AuthID, req.AuthID, next)
+	// The refresh request does not carry the physical filename. Leave it empty
+	// so the host preserves the existing auth-dir filename.
+	auth.FileName = ""
+	mergeAuthMetadata(&auth, req.Metadata)
+	mergeAuthAttributes(&auth, req.Attributes)
 	return pluginapi.AuthRefreshResponse{Auth: auth, NextRefreshAfter: next}, nil
 }
 
@@ -64,8 +71,6 @@ func (p *Provider) RegisterCommandLine(context.Context, pluginapi.CommandLineReg
 	return pluginapi.CommandLineRegistrationResponse{Flags: []pluginapi.CommandLineFlag{
 		{Name: "mirasim-login", Usage: "Run Mirasim browser OAuth login.", Type: "bool", DefaultValue: "false"},
 		{Name: "mirasim-login-provider", Usage: "Mirasim OAuth account provider: github or google.", Type: "string", DefaultValue: "github"},
-		{Name: "mirasim-import", Usage: "Import a Mirasim plaintext credential directory.", Type: "bool", DefaultValue: "false"},
-		{Name: "mirasim-credential-dir", Usage: "Directory containing refresh-token.txt and device-private-key.pem.", Type: "string"},
 		{Name: "mirasim-relay-url", Usage: "Mirasim relay base URL.", Type: "string"},
 		{Name: "mirasim-admin-url", Usage: "Mirasim authentication service base URL.", Type: "string"},
 		{Name: "mirasim-client-version", Usage: "Value sent in x-mirasim-client.", Type: "string"},
@@ -74,42 +79,56 @@ func (p *Provider) RegisterCommandLine(context.Context, pluginapi.CommandLineReg
 
 func (p *Provider) ExecuteCommandLine(ctx context.Context, req pluginapi.CommandLineExecutionRequest) (pluginapi.CommandLineExecutionResponse, error) {
 	login := flagBool(req.TriggeredFlags, "mirasim-login")
-	importCredentials := flagBool(req.TriggeredFlags, "mirasim-import")
-	if login && importCredentials {
-		return commandError(fmt.Errorf("--mirasim-login and --mirasim-import cannot be used together")), nil
-	}
-	if !login && !importCredentials {
+	if !login {
 		return pluginapi.CommandLineExecutionResponse{}, nil
 	}
 	settings := p.settingsFromFlags(req.Flags)
-	if login {
-		auth, stdout, errLogin := p.runLocalLogin(ctx, settings, flagString(req.Flags, "mirasim-login-provider"), req.Host.ProxyURL, flagBoolValue(req.Flags, "no-browser"))
-		if errLogin != nil {
-			return pluginapi.CommandLineExecutionResponse{Stdout: stdout, Stderr: []byte(errLogin.Error() + "\n"), ExitCode: 1}, nil
+	auth, stdout, errLogin := p.runLocalLogin(ctx, settings, flagString(req.Flags, "mirasim-login-provider"), req.Host.ProxyURL, flagBoolValue(req.Flags, "no-browser"))
+	if errLogin != nil {
+		return pluginapi.CommandLineExecutionResponse{Stdout: stdout, Stderr: []byte(errLogin.Error() + "\n"), ExitCode: 1}, nil
+	}
+	return pluginapi.CommandLineExecutionResponse{Stdout: stdout, Auths: []pluginapi.AuthData{auth}}, nil
+}
+
+func mergeAuthMetadata(auth *pluginapi.AuthData, existing map[string]any) {
+	if auth == nil {
+		return
+	}
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	for key, value := range existing {
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "access_token", "refresh_token", "device_private_key", "credential_dir":
+			continue
 		}
-		return pluginapi.CommandLineExecutionResponse{Stdout: stdout, Auths: []pluginapi.AuthData{auth}}, nil
+		if _, present := auth.Metadata[key]; !present {
+			auth.Metadata[key] = value
+		}
 	}
-	storage, errStorage := credentials.FromSettings(settings)
-	if errStorage != nil {
-		return commandError(errStorage), nil
+	auth.Metadata["type"] = credentials.Provider
+	auth.Metadata["auth_kind"] = "oauth"
+	delete(auth.Metadata, "credential_dir")
+	delete(auth.Metadata, "credential_mode")
+}
+
+func mergeAuthAttributes(auth *pluginapi.AuthData, existing map[string]string) {
+	if auth == nil {
+		return
 	}
-	client := p.pool.Client(storage)
-	if errProxy := client.SetAuthProxy(req.Host.ProxyURL); errProxy != nil {
-		return commandError(errProxy), nil
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
 	}
-	if errValidate := client.Validate(); errValidate != nil {
-		return commandError(errValidate), nil
+	for key, value := range existing {
+		if _, present := auth.Attributes[key]; !present {
+			auth.Attributes[key] = value
+		}
 	}
-	auth := storage.AuthData("mirasim.json", "mirasim.json", client.NextRefreshAfter(time.Now()))
-	stdout := fmt.Sprintf("Imported Mirasim credential directory: %s\nNo token or private-key value was copied into the auth JSON.\n", storage.CredentialDir)
-	return pluginapi.CommandLineExecutionResponse{Stdout: []byte(stdout), Auths: []pluginapi.AuthData{auth}}, nil
+	auth.Attributes["auth_kind"] = "oauth"
 }
 
 func (p *Provider) settingsFromFlags(flags map[string]pluginapi.CommandLineFlagValue) pluginconfig.Settings {
 	settings := p.settings
-	if value := flagString(flags, "mirasim-credential-dir"); value != "" {
-		settings.CredentialDir = value
-	}
 	if value := flagString(flags, "mirasim-relay-url"); value != "" {
 		settings.RelayURL = value
 	}
@@ -120,10 +139,6 @@ func (p *Provider) settingsFromFlags(flags map[string]pluginapi.CommandLineFlagV
 		settings.ClientVersion = value
 	}
 	return settings
-}
-
-func commandError(err error) pluginapi.CommandLineExecutionResponse {
-	return pluginapi.CommandLineExecutionResponse{Stderr: []byte(err.Error() + "\n"), ExitCode: 1}
 }
 
 func flagBool(flags map[string]pluginapi.CommandLineFlagValue, name string) bool {

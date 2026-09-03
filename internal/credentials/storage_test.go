@@ -5,98 +5,51 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
+	"time"
 
 	pluginconfig "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/config"
 )
 
-func TestStorageJSONContainsOnlyPathAndPublicConfiguration(t *testing.T) {
-	dir := t.TempDir()
-	storage, errStorage := FromSettings(pluginconfig.Settings{
-		CredentialDir: dir,
+func TestInstallOAuthReturnsSelfContainedAuthStorage(t *testing.T) {
+	base := FromSettings(pluginconfig.Settings{
 		RelayURL:      "https://relay.example",
 		AdminURL:      "https://admin.example",
 		ClientVersion: "1.2.3",
 	})
-	if errStorage != nil {
-		t.Fatalf("FromSettings() error = %v", errStorage)
+	storage, errInstall := InstallOAuth(base, "oauth-access", "oauth-refresh")
+	if errInstall != nil {
+		t.Fatalf("InstallOAuth() error = %v", errInstall)
 	}
-	raw := storage.JSON()
-	for _, forbidden := range [][]byte{[]byte("access_token"), []byte("refresh_token"), []byte("private_key")} {
-		if bytes.Contains(raw, forbidden) {
-			t.Fatalf("storage JSON contains secret field %q: %s", forbidden, raw)
-		}
+	if storage.AccessToken != "oauth-access" || storage.RefreshToken != "oauth-refresh" || !validDeviceKey([]byte(storage.DevicePrivateKey)) {
+		t.Fatal("InstallOAuth() did not return complete self-contained storage")
 	}
-	parsed, errParse := Parse(raw, pluginconfig.Defaults())
-	if errParse != nil {
-		t.Fatalf("Parse() error = %v", errParse)
+	var payload map[string]any
+	if errJSON := json.Unmarshal(storage.JSON(), &payload); errJSON != nil {
+		t.Fatal(errJSON)
 	}
-	if parsed == nil || parsed.CredentialDir != storage.CredentialDir {
-		t.Fatalf("parsed storage = %#v", parsed)
+	if payload["access_token"] != "oauth-access" || payload["refresh_token"] != "oauth-refresh" || payload["device_private_key"] == "" || payload["auth_kind"] != "oauth" {
+		t.Fatal("auth JSON is missing self-contained credential fields")
+	}
+	if _, present := payload["credential_dir"]; present {
+		t.Fatal("auth JSON retained an obsolete credential directory")
 	}
 }
 
-func TestInstallOAuthWritesSecretsOutsideAuthJSONAndPreservesValidDeviceKey(t *testing.T) {
-	dir := t.TempDir()
-	storage, errStorage := FromSettings(pluginconfig.Settings{CredentialDir: dir})
-	if errStorage != nil {
-		t.Fatal(errStorage)
+func TestInstallOAuthPreservesValidEmbeddedDeviceKey(t *testing.T) {
+	keyPEM := testDeviceKey(t)
+	storage, errInstall := InstallOAuth(Storage{DevicePrivateKey: keyPEM}, "access", "refresh")
+	if errInstall != nil {
+		t.Fatal(errInstall)
 	}
-	_, privateKey, errGenerate := ed25519.GenerateKey(rand.Reader)
-	if errGenerate != nil {
-		t.Fatal(errGenerate)
-	}
-	der, errMarshal := x509.MarshalPKCS8PrivateKey(privateKey)
-	if errMarshal != nil {
-		t.Fatal(errMarshal)
-	}
-	originalKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-	if errWrite := os.WriteFile(filepath.Join(dir, "device-private-key.pem"), originalKey, 0o600); errWrite != nil {
-		t.Fatal(errWrite)
-	}
-
-	if errInstall := InstallOAuth(storage, "oauth-access", "oauth-refresh"); errInstall != nil {
-		t.Fatalf("InstallOAuth() error = %v", errInstall)
-	}
-	assertSecretFile(t, dir, "access-token.txt", "oauth-access")
-	assertSecretFile(t, dir, "refresh-token.txt", "oauth-refresh")
-	keyAfter, errRead := os.ReadFile(filepath.Join(dir, "device-private-key.pem"))
-	if errRead != nil {
-		t.Fatal(errRead)
-	}
-	if !bytes.Equal(keyAfter, originalKey) {
-		t.Fatal("InstallOAuth replaced a valid device key")
-	}
-	for _, forbidden := range []string{"oauth-access", "oauth-refresh"} {
-		if bytes.Contains(storage.JSON(), []byte(forbidden)) {
-			t.Fatalf("auth JSON contains %q", forbidden)
-		}
-	}
-}
-
-func TestInstallOAuthGeneratesEd25519DeviceKey(t *testing.T) {
-	storage, errStorage := FromSettings(pluginconfig.Settings{CredentialDir: t.TempDir()})
-	if errStorage != nil {
-		t.Fatal(errStorage)
-	}
-	if errInstall := InstallOAuth(storage, "access", "refresh"); errInstall != nil {
-		t.Fatalf("InstallOAuth() error = %v", errInstall)
-	}
-	raw, errRead := os.ReadFile(filepath.Join(storage.CredentialDir, "device-private-key.pem"))
-	if errRead != nil {
-		t.Fatal(errRead)
-	}
-	if !validDeviceKey(raw) {
-		t.Fatal("generated device key is not an Ed25519 PKCS#8 PEM")
+	if storage.DevicePrivateKey != keyPEM {
+		t.Fatal("InstallOAuth() replaced a valid embedded device key")
 	}
 }
 
 func TestInstallOAuthRejectsMissingOrMultilineTokens(t *testing.T) {
-	storage := Storage{CredentialDir: t.TempDir()}
 	for _, tc := range []struct {
 		access  string
 		refresh string
@@ -105,20 +58,32 @@ func TestInstallOAuthRejectsMissingOrMultilineTokens(t *testing.T) {
 		{access: "access", refresh: ""},
 		{access: "access\nsecond", refresh: "refresh"},
 	} {
-		if errInstall := InstallOAuth(storage, tc.access, tc.refresh); errInstall == nil {
-			t.Fatalf("InstallOAuth(%q, %q) returned nil", tc.access, tc.refresh)
+		if _, errInstall := InstallOAuth(Storage{}, tc.access, tc.refresh); errInstall == nil {
+			t.Fatal("InstallOAuth() accepted invalid token material")
 		}
 	}
 }
 
-func assertSecretFile(t *testing.T, dir, name, want string) {
-	t.Helper()
-	raw, errRead := os.ReadFile(filepath.Join(dir, name))
-	if errRead != nil {
-		t.Fatal(errRead)
+func TestParseSelfContainedStoragePreservesHostFields(t *testing.T) {
+	storage, errInstall := InstallOAuth(Storage{
+		RelayURL:      "https://relay.example",
+		AdminURL:      "https://admin.example",
+		ClientVersion: "1.2.3",
+		Raw:           map[string]any{"disabled": true, "proxy_url": "http://proxy.example", "credential_dir": "ignored"},
+	}, "access", "refresh")
+	if errInstall != nil {
+		t.Fatal(errInstall)
 	}
-	if strings.TrimSpace(string(raw)) != want {
-		t.Fatalf("%s = %q, want %q", name, raw, want)
+	parsed, errParse := Parse(storage.JSON(), pluginconfig.Defaults())
+	if errParse != nil {
+		t.Fatalf("Parse() error = %v", errParse)
+	}
+	if parsed == nil || parsed.AccessToken != "access" || parsed.RefreshToken != "refresh" {
+		t.Fatal("Parse() did not restore self-contained credentials")
+	}
+	auth := parsed.AuthData("mirasim.json", "mirasim.json", time.Time{})
+	if !auth.Disabled || auth.ProxyURL != "http://proxy.example" {
+		t.Fatalf("host fields were not preserved: disabled=%t proxy=%q", auth.Disabled, auth.ProxyURL)
 	}
 }
 
@@ -132,19 +97,33 @@ func TestParseIgnoresOtherProviders(t *testing.T) {
 	}
 }
 
-func TestValidateFilesRequiresRefreshTokenAndPrivateKey(t *testing.T) {
-	dir := t.TempDir()
-	storage := Storage{CredentialDir: dir}
-	if errValidate := storage.ValidateFiles(); errValidate == nil {
-		t.Fatal("ValidateFiles() returned nil for an empty directory")
+func TestParseRejectsPathOnlyAuth(t *testing.T) {
+	if _, errParse := Parse([]byte(`{"type":"mirasim","credential_dir":"ignored"}`), pluginconfig.Defaults()); errParse == nil {
+		t.Fatal("Parse() accepted a path-only auth record")
 	}
-	if errWrite := os.WriteFile(filepath.Join(dir, "refresh-token.txt"), []byte("refresh\n"), 0o600); errWrite != nil {
-		t.Fatal(errWrite)
+}
+
+func TestValidateRequiresRefreshTokenAndValidPrivateKey(t *testing.T) {
+	if errValidate := (Storage{}).Validate(); errValidate == nil {
+		t.Fatal("Validate() accepted empty storage")
 	}
-	if errWrite := os.WriteFile(filepath.Join(dir, "device-private-key.pem"), []byte("key\n"), 0o600); errWrite != nil {
-		t.Fatal(errWrite)
+	if errValidate := (Storage{AccessToken: "access", RefreshToken: "refresh", DevicePrivateKey: "not-a-key"}).Validate(); errValidate == nil {
+		t.Fatal("Validate() accepted an invalid device key")
 	}
-	if errValidate := storage.ValidateFiles(); errValidate != nil {
-		t.Fatalf("ValidateFiles() error = %v", errValidate)
+	if errValidate := (Storage{AccessToken: "access", RefreshToken: "refresh", DevicePrivateKey: testDeviceKey(t)}).Validate(); errValidate != nil {
+		t.Fatalf("Validate() error = %v", errValidate)
 	}
+}
+
+func testDeviceKey(t *testing.T) string {
+	t.Helper()
+	_, privateKey, errGenerate := ed25519.GenerateKey(rand.Reader)
+	if errGenerate != nil {
+		t.Fatal(errGenerate)
+	}
+	der, errMarshal := x509.MarshalPKCS8PrivateKey(privateKey)
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	return string(bytes.TrimSpace(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})))
 }

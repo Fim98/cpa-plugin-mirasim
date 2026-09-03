@@ -16,8 +16,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -195,7 +193,7 @@ func TestDoRetriesOneUnauthorizedResponseWithFreshTicket(t *testing.T) {
 	}
 }
 
-func TestRefreshAccessReadsLatestDiskTokenAndDoesNotLeakErrorBody(t *testing.T) {
+func TestRefreshAccessRotatesInMemoryStorageAndDoesNotLeakErrorBody(t *testing.T) {
 	storage, _, _ := newTestStorage(t, futureJWT())
 	var expected atomic.Value
 	expected.Store("refresh-token")
@@ -220,17 +218,17 @@ func TestRefreshAccessReadsLatestDiskTokenAndDoesNotLeakErrorBody(t *testing.T) 
 	if _, errRefresh := client.RefreshAccess(context.Background()); errRefresh != nil {
 		t.Fatalf("RefreshAccess() error = %v", errRefresh)
 	}
-	assertCredentialFile(t, storage.CredentialDir, "refresh-token.txt", "rotated-1")
-
-	// Simulate mira2api or another process rotating the project-local token.
-	expected.Store("external-rotation")
-	if errWrite := os.WriteFile(filepath.Join(storage.CredentialDir, "refresh-token.txt"), []byte("external-rotation\n"), 0o600); errWrite != nil {
-		t.Fatal(errWrite)
+	if refreshed := client.Storage(); refreshed.RefreshToken != "rotated-1" || refreshed.AccessToken == "" {
+		t.Fatal("first refresh did not update provider-owned storage")
 	}
+
+	expected.Store("rotated-1")
 	if _, errRefresh := client.RefreshAccess(context.Background()); errRefresh != nil {
 		t.Fatalf("second RefreshAccess() error = %v", errRefresh)
 	}
-	assertCredentialFile(t, storage.CredentialDir, "refresh-token.txt", "rotated-2")
+	if refreshed := client.Storage(); refreshed.RefreshToken != "rotated-2" {
+		t.Fatal("second refresh did not retain the rotated refresh token")
+	}
 
 	errorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -319,23 +317,14 @@ func newTestStorage(t *testing.T, accessToken string) (credentials.Storage, ed25
 		t.Fatal(errRelay)
 	}
 	t.Setenv("MIRASIM_SEAL_PUBKEY", base64.StdEncoding.EncodeToString(relayPublic))
-	dir := t.TempDir()
-	files := map[string][]byte{
-		"refresh-token.txt":      []byte("refresh-token\n"),
-		"access-token.txt":       []byte(accessToken + "\n"),
-		"device-private-key.pem": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}),
-	}
-	for name, data := range files {
-		if errWrite := os.WriteFile(filepath.Join(dir, name), data, 0o600); errWrite != nil {
-			t.Fatal(errWrite)
-		}
-	}
 	return credentials.Storage{
-		Type:          credentials.Provider,
-		CredentialDir: dir,
-		RelayURL:      "https://relay.example",
-		AdminURL:      "https://admin.example",
-		ClientVersion: "test-client",
+		Type:             credentials.Provider,
+		AccessToken:      accessToken,
+		RefreshToken:     "refresh-token",
+		DevicePrivateKey: strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}))),
+		RelayURL:         "https://relay.example",
+		AdminURL:         "https://admin.example",
+		ClientVersion:    "test-client",
 	}, publicKey, relayPrivate
 }
 
@@ -475,17 +464,6 @@ func jwtWithExpiry(expiry time.Time) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
 	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, expiry.Unix())))
 	return header + "." + payload + ".signature"
-}
-
-func assertCredentialFile(t *testing.T, dir, name, expected string) {
-	t.Helper()
-	raw, errRead := os.ReadFile(filepath.Join(dir, name))
-	if errRead != nil {
-		t.Fatal(errRead)
-	}
-	if strings.TrimSpace(string(raw)) != expected {
-		t.Fatalf("%s = %q, want %q", name, raw, expected)
-	}
 }
 
 func TestStatusErrorLimitsDisplayedBody(t *testing.T) {

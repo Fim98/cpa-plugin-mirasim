@@ -2,7 +2,6 @@ package config
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -14,10 +13,9 @@ const (
 	DefaultClientVersion = "0.0.272"
 )
 
-// Settings contains provider defaults. Concrete auth files may override these
-// values so multiple Mirasim identities can coexist in one host.
+// Settings contains public provider and OAuth callback defaults. Credential
+// material is supplied only by OAuth and persisted by CLIProxyAPI in auth-dir.
 type Settings struct {
-	CredentialDir string `yaml:"credential-dir"`
 	RelayURL      string `yaml:"relay-url"`
 	AdminURL      string `yaml:"admin-url"`
 	ClientVersion string `yaml:"client-version"`
@@ -53,9 +51,6 @@ func Parse(raw []byte) Settings {
 }
 
 func merge(settings, configured Settings) Settings {
-	if value := strings.TrimSpace(configured.CredentialDir); value != "" {
-		settings.CredentialDir = value
-	}
 	if value := cleanURL(configured.RelayURL); value != "" {
 		settings.RelayURL = value
 	}
@@ -73,44 +68,12 @@ func merge(settings, configured Settings) Settings {
 
 // Defaults resolves environment overrides and safe provider defaults.
 func Defaults() Settings {
-	credentialDir := strings.TrimSpace(os.Getenv("MIRASIM_CREDENTIAL_DIR"))
-	if credentialDir == "" {
-		credentialDir = ".mirasim-credentials"
-	}
 	return Settings{
-		CredentialDir:      credentialDir,
 		RelayURL:           firstNonEmpty(cleanURL(os.Getenv("MIRASIM_RELAY_URL")), DefaultRelayURL),
 		AdminURL:           firstNonEmpty(cleanURL(os.Getenv("MIRASIM_ADMIN_URL")), DefaultAdminURL),
 		ClientVersion:      firstNonEmpty(strings.TrimSpace(os.Getenv("MIRASIM_CLIENT_VERSION")), DefaultClientVersion),
 		OAuthPublicBaseURL: cleanURL(os.Getenv("MIRASIM_OAUTH_PUBLIC_BASE_URL")),
 	}
-}
-
-// ResolveCredentialDir converts the configured path to a stable absolute path.
-func ResolveCredentialDir(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		value = ".mirasim-credentials"
-	}
-	value = os.ExpandEnv(value)
-	if value == "~" || strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `~\`) {
-		home, errHome := os.UserHomeDir()
-		if errHome != nil {
-			return "", errHome
-		}
-		if value == "~" {
-			value = home
-		} else {
-			remainder := strings.TrimLeft(strings.TrimPrefix(value, "~"), `/\`)
-			remainder = strings.ReplaceAll(remainder, `\`, "/")
-			value = filepath.Join(home, filepath.FromSlash(remainder))
-		}
-	}
-	abs, errAbs := filepath.Abs(value)
-	if errAbs != nil {
-		return "", errAbs
-	}
-	return filepath.Clean(abs), nil
 }
 
 func cleanURL(value string) string {

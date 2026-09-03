@@ -142,13 +142,9 @@ func (p *Provider) PollLogin(_ context.Context, req pluginapi.AuthLoginPollReque
 	session.finalizing = true
 	p.oauth.mu.Unlock()
 
-	storage, errStorage := credentials.FromSettings(p.settings)
-	if errStorage == nil {
-		errStorage = credentials.InstallOAuth(storage, accessToken, refreshToken)
-	}
+	storage, errStorage := credentials.InstallOAuth(credentials.FromSettings(p.settings), accessToken, refreshToken)
 	accessToken, refreshToken = "", ""
 	if errStorage == nil {
-		p.pool.Forget(storage)
 		client := p.pool.Client(storage)
 		if errProxy := client.SetAuthProxy(req.Host.ProxyURL); errProxy != nil {
 			errStorage = errProxy
@@ -169,8 +165,6 @@ func (p *Provider) PollLogin(_ context.Context, req pluginapi.AuthLoginPollReque
 		return oauthPollError(session.errorMessage), nil
 	}
 	auth := storage.AuthData("mirasim.json", "mirasim.json", p.pool.Client(storage).NextRefreshAfter(now))
-	auth.Metadata["credential_mode"] = "oauth-managed-plaintext"
-	auth.Metadata["auth_kind"] = "oauth"
 	session.auth = &auth
 	return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusSuccess, Message: "Mirasim OAuth login completed", Auth: auth, Auths: []pluginapi.AuthData{auth}}, nil
 }

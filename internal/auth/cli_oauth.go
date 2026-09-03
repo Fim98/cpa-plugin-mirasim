@@ -114,15 +114,11 @@ func (p *Provider) finishLocalLogin(settings pluginconfig.Settings, proxyURL, st
 	if !constantTimeEqual(state, strings.TrimSpace(result.state)) {
 		return pluginapi.AuthData{}, nil, fmt.Errorf("Mirasim OAuth state mismatch")
 	}
-	storage, errStorage := credentials.FromSettings(settings)
+	storage, errStorage := credentials.InstallOAuth(credentials.FromSettings(settings), result.accessToken, result.refreshToken)
 	if errStorage != nil {
 		return pluginapi.AuthData{}, nil, errStorage
 	}
-	if errInstall := credentials.InstallOAuth(storage, result.accessToken, result.refreshToken); errInstall != nil {
-		return pluginapi.AuthData{}, nil, errInstall
-	}
 	result.accessToken, result.refreshToken = "", ""
-	p.pool.Forget(storage)
 	client := p.pool.Client(storage)
 	if errProxy := client.SetAuthProxy(proxyURL); errProxy != nil {
 		return pluginapi.AuthData{}, nil, errProxy
@@ -131,8 +127,6 @@ func (p *Provider) finishLocalLogin(settings pluginconfig.Settings, proxyURL, st
 		return pluginapi.AuthData{}, nil, errValidate
 	}
 	auth := storage.AuthData("mirasim.json", "mirasim.json", client.NextRefreshAfter(time.Now()))
-	auth.Metadata["credential_mode"] = "oauth-managed-plaintext"
-	auth.Metadata["auth_kind"] = "oauth"
 	return auth, []byte("Mirasim authentication successful.\n"), nil
 }
 

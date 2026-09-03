@@ -33,11 +33,10 @@ func Build(configYAML []byte) pluginapi.Plugin {
 	return pluginapi.Plugin{
 		Metadata: pluginapi.Metadata{
 			Name:             "Mirasim Provider",
-			Version:          "0.4.0",
+			Version:          "0.5.0",
 			Author:           "router-for-me",
 			GitHubRepository: "https://github.com/router-for-me/cpa-plugin-mirasim",
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "credential-dir", Type: pluginapi.ConfigFieldTypeString, Description: "Plaintext Mirasim credential directory."},
 				{Name: "relay-url", Type: pluginapi.ConfigFieldTypeString, Description: "Mirasim relay base URL."},
 				{Name: "admin-url", Type: pluginapi.ConfigFieldTypeString, Description: "Mirasim authentication service base URL."},
 				{Name: "client-version", Type: pluginapi.ConfigFieldTypeString, Description: "Value sent in x-mirasim-client."},

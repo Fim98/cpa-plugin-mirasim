@@ -3,23 +3,22 @@ package auth
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	pluginconfig "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/config"
+	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/credentials"
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/mirasim"
 )
 
-func TestManagementOAuthCompletesWithoutPuttingTokensInAuthJSON(t *testing.T) {
+func TestManagementOAuthReturnsSelfContainedAuthJSONWithoutExternalWrites(t *testing.T) {
 	settings := pluginconfig.Defaults()
-	settings.CredentialDir = t.TempDir()
 	settings.AdminURL = "https://auth.mirasim.example"
 	settings.OAuthPublicBaseURL = "https://cpa.example/proxy"
 	provider := New(settings, mirasim.NewPool())
@@ -89,19 +88,24 @@ func TestManagementOAuthCompletesWithoutPuttingTokensInAuthJSON(t *testing.T) {
 	if errPoll != nil || polled.Status != pluginapi.AuthLoginStatusSuccess {
 		t.Fatalf("PollLogin() = %#v, error = %v", polled, errPoll)
 	}
-	if bytes.Contains(polled.Auth.StorageJSON, []byte("access-secret")) || bytes.Contains(polled.Auth.StorageJSON, []byte("refresh-secret")) {
-		t.Fatalf("auth JSON leaked a token: %s", polled.Auth.StorageJSON)
+	var payload map[string]any
+	if errJSON := json.Unmarshal(polled.Auth.StorageJSON, &payload); errJSON != nil {
+		t.Fatal(errJSON)
 	}
-	assertOAuthFile(t, settings.CredentialDir, "access-token.txt", "access-secret")
-	assertOAuthFile(t, settings.CredentialDir, "refresh-token.txt", "refresh-secret")
-	if info, errStat := os.Stat(filepath.Join(settings.CredentialDir, "device-private-key.pem")); errStat != nil || info.Size() == 0 {
-		t.Fatalf("device key stat = %#v, error = %v", info, errStat)
+	if payload["access_token"] != "access-secret" || payload["refresh_token"] != "refresh-secret" || payload["device_private_key"] == "" || payload["auth_kind"] != "oauth" {
+		t.Fatal("OAuth auth JSON is missing self-contained credential fields")
+	}
+	if _, present := payload["credential_dir"]; present {
+		t.Fatal("OAuth auth JSON contains a legacy credential path")
+	}
+	parsed, errParseAuth := credentials.Parse(polled.Auth.StorageJSON, settings)
+	if errParseAuth != nil || parsed == nil {
+		t.Fatalf("parse OAuth auth JSON error = %v", errParseAuth)
 	}
 }
 
 func TestManagementOAuthPendingErrorAndExpiry(t *testing.T) {
 	settings := pluginconfig.Defaults()
-	settings.CredentialDir = t.TempDir()
 	provider := New(settings, mirasim.NewPool())
 	provider.ConfigureOAuthResourceBasePath("/v0/resource/plugins/mirasim-id")
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
@@ -139,17 +143,6 @@ func TestStartLoginRequiresHTTPSForPublicNonLoopbackURL(t *testing.T) {
 	provider.ConfigureOAuthResourceBasePath("/v0/resource/plugins/mirasim-id")
 	if _, errStart := provider.StartLogin(context.Background(), pluginapi.AuthLoginStartRequest{BaseURL: "http://127.0.0.1:8317/callback"}); errStart == nil || !strings.Contains(errStart.Error(), "HTTPS") {
 		t.Fatalf("StartLogin() error = %v", errStart)
-	}
-}
-
-func assertOAuthFile(t *testing.T, dir, name, want string) {
-	t.Helper()
-	raw, errRead := os.ReadFile(filepath.Join(dir, name))
-	if errRead != nil {
-		t.Fatal(errRead)
-	}
-	if strings.TrimSpace(string(raw)) != want {
-		t.Fatalf("%s = %q, want %q", name, raw, want)
 	}
 }
 
