@@ -37,6 +37,7 @@ const (
 	quotaProbeSource  = "POST /v1/messages response headers"
 	quotaProbeHeader  = "x-mirasim-probe"
 	quotaProbeModel   = "claude-haiku-4-5-20251001-paid"
+	claudeOAuthBeta   = "oauth-2025-04-20"
 )
 
 var quotaHeaderNames = []string{
@@ -579,6 +580,7 @@ func prepareHeaders(source, auth http.Header, stream bool) http.Header {
 	} {
 		headers.Del(name)
 	}
+	dropCommaSeparatedHeaderValue(headers, "Anthropic-Beta", claudeOAuthBeta)
 	for key, values := range auth {
 		headers[key] = append([]string(nil), values...)
 	}
@@ -591,6 +593,32 @@ func prepareHeaders(source, auth http.Header, stream bool) http.Header {
 		headers.Set("Accept", "application/json")
 	}
 	return headers
+}
+
+func dropCommaSeparatedHeaderValue(headers http.Header, name, drop string) {
+	for key, values := range headers {
+		if !strings.EqualFold(key, name) {
+			continue
+		}
+		filtered := make([]string, 0, len(values))
+		for _, value := range values {
+			kept := make([]string, 0)
+			for _, token := range strings.Split(value, ",") {
+				token = strings.TrimSpace(token)
+				if token != "" && token != drop {
+					kept = append(kept, token)
+				}
+			}
+			if len(kept) > 0 {
+				filtered = append(filtered, strings.Join(kept, ","))
+			}
+		}
+		if len(filtered) == 0 {
+			delete(headers, key)
+			continue
+		}
+		headers[key] = filtered
+	}
 }
 
 func cloneHeader(source http.Header) http.Header {

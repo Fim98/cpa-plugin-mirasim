@@ -99,6 +99,17 @@ func TestSignatureV2UsesBlankMetadataLineWhenMetadataIsEmpty(t *testing.T) {
 	}
 }
 
+func TestRelayAgentRecognizesCodexRoutes(t *testing.T) {
+	for _, requestPath := range []string{"/v1/responses", "/v1/alpha/search"} {
+		if got := relayAgent(requestPath); got != "codex" {
+			t.Fatalf("relayAgent(%q) = %q, want codex", requestPath, got)
+		}
+	}
+	if got := relayAgent("/v1/messages"); got != "claude" {
+		t.Fatalf("relayAgent(/v1/messages) = %q, want claude", got)
+	}
+}
+
 func TestRelaySealPublicKeyDefaultsAndFailsClosed(t *testing.T) {
 	t.Setenv("MIRASIM_SEAL_PUBKEY", "")
 	publicKey, errDefault := relaySealPublicKey()

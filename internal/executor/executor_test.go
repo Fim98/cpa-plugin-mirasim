@@ -251,6 +251,55 @@ func TestHTTPRequestNormalizationPreservesClaudeOutputConfig(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestNormalizesCodexCompatibilityRoutes(t *testing.T) {
+	tests := []struct {
+		name     string
+		inputURL string
+		wantPath string
+	}{
+		{name: "legacy responses", inputURL: "https://chatgpt.com/backend-api/codex/responses?source=cli", wantPath: "/v1/responses"},
+		{name: "native responses", inputURL: "https://api.openai.com/v1/responses?source=cli", wantPath: "/v1/responses"},
+		{name: "legacy search", inputURL: "https://chatgpt.com/backend-api/codex/alpha/search?source=cli", wantPath: "/v1/alpha/search"},
+		{name: "native search", inputURL: "https://api.openai.com/v1/alpha/search?source=cli", wantPath: "/v1/alpha/search"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			storage := executorTestStorage(t)
+			calls := 0
+			host := executorHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+				calls++
+				parsed, errParse := url.Parse(req.URL)
+				if errParse != nil {
+					return pluginapi.HTTPResponse{}, errParse
+				}
+				if parsed.Path == "/v1/device/session" {
+					return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"ticket":"ticket","expiresIn":900}`)}, nil
+				}
+				if parsed.Path != test.wantPath || parsed.Query().Get("source") != "cli" {
+					t.Fatalf("relay URL = %s, want path %s and preserved query", req.URL, test.wantPath)
+				}
+				if gjson.GetBytes(req.Body, "model").String() != "gpt-5.6-sol" || gjson.GetBytes(req.Body, "reasoning.effort").String() != "high" {
+					t.Fatalf("normalized body = %s", req.Body)
+				}
+				return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"ok":true}`)}, nil
+			}}
+			response, errRequest := New(pluginconfig.Defaults(), mirasim.NewPool()).HttpRequest(context.Background(), pluginapi.ExecutorHTTPRequest{
+				Method:      http.MethodPost,
+				URL:         test.inputURL,
+				Body:        []byte(`{"model":"mirasim/gpt-5.6-sol(high)","input":"hello"}`),
+				StorageJSON: storage.JSON(),
+				HTTPClient:  host,
+			})
+			if errRequest != nil {
+				t.Fatalf("HttpRequest() error = %v", errRequest)
+			}
+			if response.StatusCode != http.StatusOK || calls != 2 {
+				t.Fatalf("response = %#v, calls = %d", response, calls)
+			}
+		})
+	}
+}
+
 func jsonPathString(body []byte, path string) string {
 	var value any
 	var decoded map[string]any

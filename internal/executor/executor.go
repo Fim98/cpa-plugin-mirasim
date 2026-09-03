@@ -149,6 +149,7 @@ func (e *Executor) HttpRequest(ctx context.Context, req pluginapi.ExecutorHTTPRe
 	if strings.TrimSpace(parsed.Path) == "" {
 		return pluginapi.ExecutorHTTPResponse{}, fmt.Errorf("parse Mirasim HTTP request URL: path is required")
 	}
+	relayPath := normalizeRelayPath(parsed.Path)
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if method == "" {
 		method = http.MethodPost
@@ -156,7 +157,7 @@ func (e *Executor) HttpRequest(ctx context.Context, req pluginapi.ExecutorHTTPRe
 	body := append([]byte(nil), req.Body...)
 	if len(body) > 0 {
 		wireFormat := sdktranslator.FormatCodex
-		if strings.HasPrefix(parsed.Path, "/v1/messages") {
+		if strings.HasPrefix(relayPath, "/v1/messages") {
 			wireFormat = sdktranslator.FormatClaude
 		}
 		body, errParse = normalizeHTTPRequestBody(body, modelFromJSON(body), wireFormat)
@@ -164,11 +165,22 @@ func (e *Executor) HttpRequest(ctx context.Context, req pluginapi.ExecutorHTTPRe
 			return pluginapi.ExecutorHTTPResponse{}, errParse
 		}
 	}
-	resp, errDo := client.Do(ctx, req.HTTPClient, method, parsed.Path, parsed.Query(), req.Headers, body)
+	resp, errDo := client.Do(ctx, req.HTTPClient, method, relayPath, parsed.Query(), req.Headers, body)
 	if errDo != nil {
 		return pluginapi.ExecutorHTTPResponse{}, errDo
 	}
 	return pluginapi.ExecutorHTTPResponse{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}, nil
+}
+
+func normalizeRelayPath(requestPath string) string {
+	switch requestPath {
+	case "/backend-api/codex/responses", "/v1/responses":
+		return "/v1/responses"
+	case "/backend-api/codex/alpha/search", "/v1/alpha/search":
+		return "/v1/alpha/search"
+	default:
+		return requestPath
+	}
 }
 
 func (e *Executor) client(raw []byte) (credentials.Storage, *mirasim.Client, error) {

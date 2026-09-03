@@ -481,6 +481,25 @@ func TestPrepareHeadersDropsClientCredentials(t *testing.T) {
 	}
 }
 
+func TestPrepareHeadersDropsOnlyMirasimOAuthBetaValue(t *testing.T) {
+	headers := prepareHeaders(http.Header{
+		"Anthropic-Beta": []string{
+			"prompt-caching-2024-07-31, oauth-2025-04-20",
+			"context-1m-2025-08-07, oauth-2025-04-20-preview",
+		},
+	}, nil, false)
+	got := strings.Join(headers.Values("Anthropic-Beta"), ",")
+	want := "prompt-caching-2024-07-31,context-1m-2025-08-07,oauth-2025-04-20-preview"
+	if got != want {
+		t.Fatalf("Anthropic-Beta = %q, want %q", got, want)
+	}
+
+	onlyOAuth := prepareHeaders(http.Header{"Anthropic-Beta": []string{" oauth-2025-04-20 "}}, nil, false)
+	if _, exists := onlyOAuth["Anthropic-Beta"]; exists {
+		t.Fatalf("empty Anthropic-Beta survived: %#v", onlyOAuth)
+	}
+}
+
 func newTestStorage(t *testing.T, accessToken string) (credentials.Storage, ed25519.PublicKey, []byte) {
 	t.Helper()
 	publicKey, privateKey, errKey := ed25519.GenerateKey(rand.Reader)

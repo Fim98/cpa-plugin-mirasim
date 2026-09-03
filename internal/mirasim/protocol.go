@@ -189,7 +189,7 @@ func (c *Client) relayMetadataLocked(requestPath string) (map[string]string, err
 }
 
 func relayAgent(requestPath string) string {
-	if strings.HasPrefix(requestPath, "/v1/responses") {
+	if strings.HasPrefix(requestPath, "/v1/responses") || strings.HasPrefix(requestPath, "/v1/alpha/search") {
 		return "codex"
 	}
 	return "claude"

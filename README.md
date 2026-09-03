@@ -22,6 +22,7 @@ The implementation follows the current [CLIProxyAPI plugin contract](https://git
 - Implements CPA model-suffix thinking controls after protocol translation: Codex `reasoning.effort`, Claude adaptive effort/on/off, and legacy Claude token budgets. Requests the relay cannot represent faithfully return HTTP 400 instead of silently changing effort.
 - Preserves streaming SSE and translates tool definitions, tool selection, tool calls, and tool continuations through CLIProxyAPI's built-in translators.
 - Reads structured limits from `GET /v1/limits`, falls back to Mirasim's signed Messages response-header probe when necessary, and ships a Management Center adapter for `management.html#/quota`.
+- Accepts Codex's `/backend-api/codex/responses` and `/backend-api/codex/alpha/search` compatibility paths, rewrites them to the relay's `/v1` paths, and removes only Mirasim's relay-incompatible `oauth-2025-04-20` beta token while preserving other Anthropic beta features.
 
 ## Protocol routing
 
@@ -32,6 +33,8 @@ Mirasim does not currently expose a usable raw Chat Completions upstream. The pl
 | Any `claude-*` model | `POST /v1/messages` |
 | Any `gpt-*` model, including one selected through Claude Code | `POST /v1/responses` using the Codex wire shape |
 | An unknown model from a Claude-format client | `POST /v1/messages` |
+
+Raw CPA HTTP forwarding also maps `/backend-api/codex/responses` to `/v1/responses` and `/backend-api/codex/alpha/search` to `/v1/alpha/search`, preserving the query string. The latter is signed and labeled as a Codex-agent request.
 
 Codex Responses uses upstream SSE even for a non-streaming downstream request. For non-streaming callers, the plugin collects the terminal `response.completed` or `response.incomplete` event and returns one translated JSON response.
 
