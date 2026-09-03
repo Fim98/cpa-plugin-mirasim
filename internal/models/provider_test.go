@@ -9,7 +9,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/mirasim"
 )
 
-func TestStaticModelsExposeOnlyClaudeFallback(t *testing.T) {
+func TestStaticModelsExposeClaudeAndGPTFallback(t *testing.T) {
 	provider := New(pluginconfig.Defaults(), mirasim.NewPool())
 	resp, errModels := provider.StaticModels(context.Background(), pluginapi.StaticModelRequest{})
 	if errModels != nil {
@@ -18,13 +18,29 @@ func TestStaticModelsExposeOnlyClaudeFallback(t *testing.T) {
 	if resp.Provider != "mirasim" || len(resp.Models) != len(fallbackModelIDs) {
 		t.Fatalf("response = %#v", resp)
 	}
+	claudeCount := 0
+	gptCount := 0
 	for _, model := range resp.Models {
-		if !isExposedModel(model.ID) || len(model.SupportedGenerationMethods) == 0 || model.Type != "claude" || model.ContextLength == 0 || model.MaxCompletionTokens == 0 {
+		if !isExposedModel(model.ID) || len(model.SupportedGenerationMethods) == 0 || model.ContextLength == 0 || model.MaxCompletionTokens == 0 {
 			t.Fatalf("incomplete model metadata: %#v", model)
 		}
-		if model.SupportedGenerationMethods[0] != "messages" {
-			t.Fatalf("Claude model advertises an unverified Responses route: %#v", model)
+		switch model.Type {
+		case "claude":
+			claudeCount++
+			if model.SupportedGenerationMethods[0] != "messages" {
+				t.Fatalf("Claude model advertises wrong route: %#v", model)
+			}
+		case "openai":
+			gptCount++
+			if model.SupportedGenerationMethods[0] != "responses" {
+				t.Fatalf("GPT model advertises wrong route: %#v", model)
+			}
+		default:
+			t.Fatalf("unexpected model family: %#v", model)
 		}
+	}
+	if claudeCount != 5 || gptCount != 3 {
+		t.Fatalf("fallback family counts: Claude=%d GPT=%d", claudeCount, gptCount)
 	}
 	byID := make(map[string]pluginapi.ModelInfo, len(resp.Models))
 	for _, model := range resp.Models {
@@ -40,19 +56,20 @@ func TestStaticModelsExposeOnlyClaudeFallback(t *testing.T) {
 	}
 }
 
-func TestExposedModelsFiltersGPTCatalogEntries(t *testing.T) {
+func TestExposedModelsIncludesClaudeAndGPTCatalogEntries(t *testing.T) {
 	models := exposedModels([]mirasim.RemoteModel{
 		{ID: "claude-sonnet-5", Object: "model", OwnedBy: "anthropic"},
 		{ID: "gpt-5.6-sol", Object: "model", OwnedBy: "openai"},
 		{ID: " Claude-Opus-5 ", Object: "model", OwnedBy: "anthropic"},
+		{ID: "kimi-k3", Object: "model", OwnedBy: "other"},
 	})
 
-	if len(models) != 2 {
-		t.Fatalf("exposedModels() returned %d models, want 2: %#v", len(models), models)
+	if len(models) != 3 {
+		t.Fatalf("exposedModels() returned %d models, want 3: %#v", len(models), models)
 	}
 	for _, model := range models {
 		if !isExposedModel(model.ID) {
-			t.Fatalf("non-Claude model was exposed: %#v", model)
+			t.Fatalf("unsupported model was exposed: %#v", model)
 		}
 	}
 }

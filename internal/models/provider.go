@@ -16,6 +16,9 @@ var fallbackModelIDs = []string{
 	"claude-opus-4-8",
 	"claude-opus-5",
 	"claude-sonnet-5",
+	"gpt-5.6-luna",
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
 }
 
 type modelDefinition struct {
@@ -131,7 +134,8 @@ func exposedModels(catalog []mirasim.RemoteModel) []pluginapi.ModelInfo {
 }
 
 func isExposedModel(id string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(id)), "claude-")
+	id = strings.ToLower(strings.TrimSpace(id))
+	return strings.HasPrefix(id, "claude-") || strings.HasPrefix(id, "gpt-")
 }
 
 func modelInfo(id, object string, created int64, owner string) pluginapi.ModelInfo {

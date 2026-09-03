@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-09-01
+Superseded by [ADR 0012](0012-publish-claude-and-gpt-models.md) — 2026-09-03
 
 ## Context
 

@@ -16,7 +16,7 @@ The implementation follows the current [CLIProxyAPI plugin contract](https://git
 - Seals normal relay-request signature and session metadata into `x-mirasim-enc` with `mrs-seal-v1` (X25519, HKDF-SHA256, and ChaCha20-Poly1305).
 - Removes a leading `mirasim/` model prefix and removes unsupported Claude `output_config` fields.
 - Retries one relay HTTP 401 with a fresh device ticket, then delegates credential refresh and request retry to CPA.
-- Loads the live model catalog from `GET /v1/models`, publishes only `claude-*` entries, and uses a static five-model Claude fallback for startup discovery.
+- Loads the live model catalog from `GET /v1/models`, publishes both `claude-*` and `gpt-*` entries, and uses the five verified Claude plus three verified GPT models as the static startup fallback.
 - Enriches known live and fallback models with family, display name, context/output limits, generation methods, supported parameters, and relay-accurate thinking metadata.
 - Accepts and emits CLIProxyAPI's `openai`, `openai-response`, `claude`, `gemini`, and `codex` formats.
 - Implements CPA model-suffix thinking controls after protocol translation: Codex `reasoning.effort`, Claude adaptive on/off, and legacy Claude token budgets. Requests the relay cannot represent faithfully return HTTP 400 instead of silently changing effort.
@@ -37,7 +37,7 @@ Codex Responses uses upstream SSE even for a non-streaming downstream request. F
 
 Catalog presence is not proof that every model is currently routable. Relay capacity and accepted request shape remain time-sensitive upstream behavior.
 
-The GPT/Codex execution path remains implemented for compatibility work, but GPT models are intentionally filtered from both static and per-auth model discovery. CLIProxyAPI therefore advertises only Claude models. See [ADR 0002](docs/decisions/0002-publish-claude-only-model-catalog.md).
+Both model families are registered with CLIProxyAPI. Claude models use Messages; GPT models use the real Codex Responses request shape. The GPT publication decision supersedes the earlier Claude-only rollout boundary; see [ADR 0012](docs/decisions/0012-publish-claude-and-gpt-models.md).
 
 ## Thinking controls
 
@@ -96,8 +96,8 @@ The generated `.h` file is not needed by CLIProxyAPI. Tagged releases are built 
 Copy the platform library into CLIProxyAPI's plugin directory. Both unversioned and versioned names are supported, for example:
 
 - `plugins/mirasim.dll`
-- `plugins/mirasim-v0.5.0.dll`
-- `plugins/linux/amd64/mirasim-v0.5.0.so`
+- `plugins/mirasim-v0.6.0.dll`
+- `plugins/linux/amd64/mirasim-v0.6.0.so`
 
 Enable dynamic plugins and configure Mirasim in CLIProxyAPI's `config.yaml`:
 
@@ -229,7 +229,7 @@ The frontend integration and its upgrade boundary are documented in [ADR 0004](d
 - Incoming `Authorization`, `Proxy-Authorization`, and `X-Api-Key` values are removed before Mirasim authentication headers are injected.
 - Incoming `x-mirasim-*` values are removed, and ordinary relay metadata is sent only inside `x-mirasim-enc`.
 
-The provider boundaries are recorded in [ADR 0001](docs/decisions/0001-mirasim-provider-boundaries.md), the v2 authentication design in [ADR 0003](docs/decisions/0003-adopt-mirasim-v2-authentication-envelope.md), the quota-page integration in [ADR 0004](docs/decisions/0004-integrate-quota-with-management-center.md), the OAuth design in [ADR 0005](docs/decisions/0005-implement-mirasim-oauth-login.md), the CPA-managed credential-storage decision in [ADR 0006](docs/decisions/0006-store-credentials-in-cpa-auth-json.md), account-specific validated persistence in [ADR 0009](docs/decisions/0009-validate-oauth-and-name-auths-by-account.md), the thinking boundary in [ADR 0010](docs/decisions/0010-apply-thinking-at-the-mirasim-wire-boundary.md), and versioned storage/model metadata in [ADR 0011](docs/decisions/0011-version-oauth-storage-and-publish-model-capabilities.md).
+The provider boundaries are recorded in [ADR 0001](docs/decisions/0001-mirasim-provider-boundaries.md), the v2 authentication design in [ADR 0003](docs/decisions/0003-adopt-mirasim-v2-authentication-envelope.md), the quota-page integration in [ADR 0004](docs/decisions/0004-integrate-quota-with-management-center.md), the OAuth design in [ADR 0005](docs/decisions/0005-implement-mirasim-oauth-login.md), the CPA-managed credential-storage decision in [ADR 0006](docs/decisions/0006-store-credentials-in-cpa-auth-json.md), account-specific validated persistence in [ADR 0009](docs/decisions/0009-validate-oauth-and-name-auths-by-account.md), the thinking boundary in [ADR 0010](docs/decisions/0010-apply-thinking-at-the-mirasim-wire-boundary.md), versioned storage/model metadata in [ADR 0011](docs/decisions/0011-version-oauth-storage-and-publish-model-capabilities.md), and GPT publication in [ADR 0012](docs/decisions/0012-publish-claude-and-gpt-models.md).
 
 ## License
 

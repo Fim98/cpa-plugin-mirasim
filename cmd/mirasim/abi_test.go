@@ -50,12 +50,13 @@ func TestABIRegisterAndManagementRoute(t *testing.T) {
 	if errDecode := json.Unmarshal(envelope.Result, &modelResponse); errDecode != nil {
 		t.Fatalf("decode static models: %v", errDecode)
 	}
-	if len(modelResponse.Models) != 5 {
+	if len(modelResponse.Models) != 8 {
 		t.Fatalf("static models = %#v", modelResponse.Models)
 	}
 	for _, model := range modelResponse.Models {
-		if !strings.HasPrefix(strings.ToLower(model.ID), "claude-") {
-			t.Fatalf("non-Claude model exposed through ABI: %#v", model)
+		id := strings.ToLower(model.ID)
+		if !strings.HasPrefix(id, "claude-") && !strings.HasPrefix(id, "gpt-") {
+			t.Fatalf("unsupported model exposed through ABI: %#v", model)
 		}
 	}
 
