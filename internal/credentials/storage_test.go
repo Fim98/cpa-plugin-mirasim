@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,9 @@ func TestInstallOAuthReturnsSelfContainedAuthStorage(t *testing.T) {
 	}
 	if storage.AccessToken != "oauth-access" || storage.RefreshToken != "oauth-refresh" || !validDeviceKey([]byte(storage.DevicePrivateKey)) {
 		t.Fatal("InstallOAuth() did not return complete self-contained storage")
+	}
+	if name := storage.DefaultAuthFileName(); name == "mirasim.json" || !strings.HasPrefix(name, "mirasim-") || !strings.HasSuffix(name, ".json") {
+		t.Fatalf("device-specific auth filename = %q", name)
 	}
 	var payload map[string]any
 	if errJSON := json.Unmarshal(storage.JSON(), &payload); errJSON != nil {
@@ -56,6 +60,22 @@ func TestResolveAccessTokenExpiryUsesJWTExpiresInAndOpaqueFallback(t *testing.T)
 	}
 	if got := ResolveAccessTokenExpiry("opaque", 0, now); !got.Equal(now.Add(opaqueAccessTokenLifetime)) {
 		t.Fatalf("opaque fallback expiry = %s", got)
+	}
+}
+
+func TestPopulateIdentityUsesStableJWTClaims(t *testing.T) {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"Account 42/West","email":"User@Example.COM"}`))
+	storage := Storage{AccessToken: header + "." + payload + ".signature"}
+	storage.PopulateIdentityFromAccessToken()
+	if storage.AccountID != "Account 42/West" || storage.Email != "User@Example.COM" {
+		t.Fatalf("identity = %#v", storage)
+	}
+	if name := storage.DefaultAuthFileName(); name != "mirasim-account-42-west.json" {
+		t.Fatalf("auth filename = %q", name)
+	}
+	if label := storage.AuthLabel(); label != "Mirasim (User@Example.COM)" {
+		t.Fatalf("auth label = %q", label)
 	}
 }
 

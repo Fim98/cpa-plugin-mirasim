@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,6 +24,7 @@ func TestManagementOAuthReturnsSelfContainedAuthJSONWithoutExternalWrites(t *tes
 	settings.OAuthPublicBaseURL = "https://cpa.example/proxy"
 	provider := New(settings, mirasim.NewPool())
 	provider.ConfigureOAuthResourceBasePath("/v0/resource/plugins/mirasim-id")
+	accessToken := identityJWT("account-123", "user@example.com", time.Now().Add(time.Hour))
 
 	started, errStart := provider.StartLogin(context.Background(), pluginapi.AuthLoginStartRequest{Provider: "mirasim", BaseURL: "http://127.0.0.1:8317/v0/management/oauth-callback"})
 	if errStart != nil {
@@ -31,7 +33,7 @@ func TestManagementOAuthReturnsSelfContainedAuthJSONWithoutExternalWrites(t *tes
 	if started.State == "" || started.Provider != "mirasim" || !strings.HasPrefix(started.URL, "https://cpa.example/proxy/v0/resource/plugins/mirasim-id/oauth/start?") {
 		t.Fatalf("start response = %#v", started)
 	}
-	if raw := []byte(toText(started.Metadata)); bytes.Contains(raw, []byte("access-secret")) || bytes.Contains(raw, []byte("refresh-secret")) {
+	if raw := []byte(toText(started.Metadata)); bytes.Contains(raw, []byte(accessToken)) || bytes.Contains(raw, []byte("refresh-secret")) {
 		t.Fatalf("start metadata contains a token: %s", raw)
 	}
 
@@ -65,14 +67,14 @@ func TestManagementOAuthReturnsSelfContainedAuthJSONWithoutExternalWrites(t *tes
 		Path:   "/v0/resource/plugins/mirasim-id/oauth/callback",
 		Query: url.Values{
 			"state":         []string{started.State},
-			"access_token":  []string{"access-secret"},
+			"access_token":  []string{accessToken},
 			"refresh_token": []string{"refresh-secret"},
 		},
 	})
 	if errCallback != nil || callback.StatusCode != http.StatusSeeOther {
 		t.Fatalf("callback = %#v, error = %v", callback, errCallback)
 	}
-	if location := callback.Headers.Get("Location"); strings.Contains(location, "access-secret") || strings.Contains(location, "refresh-secret") || !strings.Contains(location, "result=complete") {
+	if location := callback.Headers.Get("Location"); strings.Contains(location, accessToken) || strings.Contains(location, "refresh-secret") || !strings.Contains(location, "result=complete") {
 		t.Fatalf("callback redirect is not clean: %q", location)
 	}
 	cleanPage, errClean := provider.HandleOAuthResource(context.Background(), pluginapi.ManagementRequest{
@@ -84,7 +86,7 @@ func TestManagementOAuthReturnsSelfContainedAuthJSONWithoutExternalWrites(t *tes
 		t.Fatalf("clean callback page = %#v, error = %v", cleanPage, errClean)
 	}
 
-	polled, errPoll := provider.PollLogin(context.Background(), pluginapi.AuthLoginPollRequest{Provider: "mirasim", State: started.State, Host: pluginapi.HostConfigSummary{ProxyURL: "direct"}})
+	polled, errPoll := provider.PollLogin(context.Background(), pluginapi.AuthLoginPollRequest{Provider: "mirasim", State: started.State, Host: pluginapi.HostConfigSummary{ProxyURL: "direct"}, HTTPClient: oauthValidationClient{}})
 	if errPoll != nil || polled.Status != pluginapi.AuthLoginStatusSuccess {
 		t.Fatalf("PollLogin() = %#v, error = %v", polled, errPoll)
 	}
@@ -92,8 +94,14 @@ func TestManagementOAuthReturnsSelfContainedAuthJSONWithoutExternalWrites(t *tes
 	if errJSON := json.Unmarshal(polled.Auth.StorageJSON, &payload); errJSON != nil {
 		t.Fatal(errJSON)
 	}
-	if payload["access_token"] != "access-secret" || payload["refresh_token"] != "refresh-secret" || payload["device_private_key"] == "" || payload["auth_kind"] != "oauth" {
+	if payload["access_token"] != accessToken || payload["refresh_token"] != "refresh-secret" || payload["device_private_key"] == "" || payload["auth_kind"] != "oauth" {
 		t.Fatal("OAuth auth JSON is missing self-contained credential fields")
+	}
+	if payload["account_id"] != "account-123" || payload["email"] != "user@example.com" {
+		t.Fatalf("OAuth identity = account_id:%v email:%v", payload["account_id"], payload["email"])
+	}
+	if polled.Auth.FileName != "mirasim-account-123.json" || polled.Auth.Label != "Mirasim (user@example.com)" {
+		t.Fatalf("OAuth auth identity = file:%q label:%q", polled.Auth.FileName, polled.Auth.Label)
 	}
 	if _, present := payload["credential_dir"]; present {
 		t.Fatal("OAuth auth JSON contains a legacy credential path")
@@ -144,6 +152,58 @@ func TestStartLoginRequiresHTTPSForPublicNonLoopbackURL(t *testing.T) {
 	if _, errStart := provider.StartLogin(context.Background(), pluginapi.AuthLoginStartRequest{BaseURL: "http://127.0.0.1:8317/callback"}); errStart == nil || !strings.Contains(errStart.Error(), "HTTPS") {
 		t.Fatalf("StartLogin() error = %v", errStart)
 	}
+}
+
+func TestManagementOAuthRejectsCredentialsThatFailRemoteValidation(t *testing.T) {
+	provider := New(pluginconfig.Defaults(), mirasim.NewPool())
+	provider.ConfigureOAuthResourceBasePath("/v0/resource/plugins/mirasim-id")
+	started, errStart := provider.StartLogin(context.Background(), pluginapi.AuthLoginStartRequest{BaseURL: "http://127.0.0.1:8317/callback"})
+	if errStart != nil {
+		t.Fatal(errStart)
+	}
+	_, _ = provider.HandleOAuthResource(context.Background(), pluginapi.ManagementRequest{Path: "/oauth/callback", Query: url.Values{
+		"state":         []string{started.State},
+		"access_token":  []string{identityJWT("rejected", "", time.Now().Add(time.Hour))},
+		"refresh_token": []string{"refresh-secret"},
+	}})
+	failedClient := oauthValidationClient{status: http.StatusUnauthorized, body: []byte(`{"error":"PRIVATE_UPSTREAM_DETAIL"}`)}
+	polled, errPoll := provider.PollLogin(context.Background(), pluginapi.AuthLoginPollRequest{State: started.State, HTTPClient: failedClient})
+	if errPoll != nil || polled.Status != pluginapi.AuthLoginStatusError || polled.Auth.FileName != "" {
+		t.Fatalf("PollLogin() = %#v, error = %v", polled, errPoll)
+	}
+	if strings.Contains(polled.Message, "PRIVATE_UPSTREAM_DETAIL") || !strings.Contains(polled.Message, "HTTP 401") {
+		t.Fatalf("unsafe or incomplete validation error = %q", polled.Message)
+	}
+}
+
+type oauthValidationClient struct {
+	status int
+	body   []byte
+}
+
+func (c oauthValidationClient) Do(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+	parsed, _ := url.Parse(req.URL)
+	if c.status != 0 {
+		return pluginapi.HTTPResponse{StatusCode: c.status, Headers: make(http.Header), Body: append([]byte(nil), c.body...)}, nil
+	}
+	switch parsed.Path {
+	case "/v1/device/session":
+		return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"ticket":"device-ticket","expiresIn":900}`)}, nil
+	case "/v1/models":
+		return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"data":[{"id":"claude-sonnet-5"}]}`)}, nil
+	default:
+		return pluginapi.HTTPResponse{}, fmt.Errorf("unexpected validation path %s", parsed.Path)
+	}
+}
+
+func (oauthValidationClient) DoStream(context.Context, pluginapi.HTTPRequest) (pluginapi.HTTPStreamResponse, error) {
+	return pluginapi.HTTPStreamResponse{}, fmt.Errorf("unexpected validation stream")
+}
+
+func identityJWT(accountID, email string, expiry time.Time) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload, _ := json.Marshal(map[string]any{"sub": accountID, "email": email, "exp": expiry.Unix()})
+	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
 }
 
 func toText(value any) string {

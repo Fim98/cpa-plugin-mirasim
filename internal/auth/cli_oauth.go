@@ -15,7 +15,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	pluginconfig "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/config"
-	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/credentials"
 )
 
 const cliManualPromptDelay = 15 * time.Second
@@ -89,7 +88,7 @@ func (p *Provider) runLocalLogin(ctx context.Context, settings pluginconfig.Sett
 		case <-timer.C:
 			return pluginapi.AuthData{}, nil, fmt.Errorf("Mirasim OAuth login timed out")
 		case result := <-resultCh:
-			return p.finishLocalLogin(settings, proxyURL, state, result)
+			return p.finishLocalLogin(ctx, settings, proxyURL, state, result)
 		case <-manualTimer.C:
 			manualInput, manualError = asyncPrompt("Paste the Mirasim callback URL (or press Enter to keep waiting): ")
 		case input := <-manualInput:
@@ -99,7 +98,7 @@ func (p *Provider) runLocalLogin(ctx context.Context, settings pluginconfig.Sett
 				return pluginapi.AuthData{}, nil, errParse
 			}
 			if okResult {
-				return p.finishLocalLogin(settings, proxyURL, state, result)
+				return p.finishLocalLogin(ctx, settings, proxyURL, state, result)
 			}
 		case errRead := <-manualError:
 			return pluginapi.AuthData{}, nil, errRead
@@ -107,26 +106,21 @@ func (p *Provider) runLocalLogin(ctx context.Context, settings pluginconfig.Sett
 	}
 }
 
-func (p *Provider) finishLocalLogin(settings pluginconfig.Settings, proxyURL, state string, result localOAuthResult) (pluginapi.AuthData, []byte, error) {
+func (p *Provider) finishLocalLogin(ctx context.Context, settings pluginconfig.Settings, proxyURL, state string, result localOAuthResult) (pluginapi.AuthData, []byte, error) {
 	if result.errorMessage != "" {
 		return pluginapi.AuthData{}, nil, fmt.Errorf("Mirasim OAuth login failed: %s", result.errorMessage)
 	}
 	if !constantTimeEqual(state, strings.TrimSpace(result.state)) {
 		return pluginapi.AuthData{}, nil, fmt.Errorf("Mirasim OAuth state mismatch")
 	}
-	storage, errStorage := credentials.InstallOAuth(credentials.FromSettings(settings), result.accessToken, result.refreshToken)
+	storage, errStorage := p.finalizeOAuthStorage(ctx, settings, result.accessToken, result.refreshToken, proxyURL, nil)
 	if errStorage != nil {
 		return pluginapi.AuthData{}, nil, errStorage
 	}
 	result.accessToken, result.refreshToken = "", ""
 	client := p.pool.Client(storage)
-	if errProxy := client.SetAuthProxy(proxyURL); errProxy != nil {
-		return pluginapi.AuthData{}, nil, errProxy
-	}
-	if errValidate := client.Validate(); errValidate != nil {
-		return pluginapi.AuthData{}, nil, errValidate
-	}
-	auth := storage.AuthData("mirasim.json", "mirasim.json", client.NextRefreshAfter(time.Now()))
+	fileName := storage.DefaultAuthFileName()
+	auth := storage.AuthData(fileName, fileName, client.NextRefreshAfter(time.Now()))
 	return auth, []byte("Mirasim authentication successful.\n"), nil
 }
 

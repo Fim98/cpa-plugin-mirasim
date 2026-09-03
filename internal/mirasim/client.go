@@ -417,6 +417,7 @@ func (c *Client) refreshAccessLocked(ctx context.Context) error {
 	now := time.Now().UTC()
 	c.accessToken = payload.AccessToken
 	c.storage.AccessToken = payload.AccessToken
+	c.storage.PopulateIdentityFromAccessToken()
 	c.storage.RecordTokenTiming(payload.AccessToken, payload.ExpiresIn, now)
 	c.accessExpiresAt = c.storage.AccessTokenExpiry(now)
 	if payload.RefreshToken != "" {

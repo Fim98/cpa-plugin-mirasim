@@ -115,6 +115,27 @@ func TestListModelsSignsRequestsAndCapturesQuota(t *testing.T) {
 	}
 }
 
+func TestValidateRemoteUsesStandaloneClientForCLILogin(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case sessionPath:
+			_, _ = w.Write([]byte(`{"ticket":"device-ticket","expiresIn":900}`))
+		case modelsPath:
+			_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-5"}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	storage, _, _ := newTestStorage(t, futureJWT())
+	storage.RelayURL = server.URL
+	client := NewClient(storage)
+	if errValidate := client.ValidateRemote(context.Background(), nil, "direct"); errValidate != nil {
+		t.Fatalf("ValidateRemote() error = %v", errValidate)
+	}
+}
+
 func TestListModelsDoesNotReuseStaleQuotaWhenHeadersDisappear(t *testing.T) {
 	accessToken := futureJWT()
 	storage, publicKey, relayPrivate := newTestStorage(t, accessToken)

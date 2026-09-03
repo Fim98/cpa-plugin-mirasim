@@ -7,6 +7,7 @@ The implementation follows the current [CLIProxyAPI plugin contract](https://git
 ## Capabilities
 
 - Supports Management Center browser OAuth and local command-line OAuth with GitHub or Google, matching Mirasim's current sign-in providers.
+- Verifies each completed OAuth login by minting a device ticket and reading `GET /v1/models` before returning credentials to CPA.
 - Returns one self-contained provider auth JSON after OAuth, including the access token, refresh token, and generated Ed25519 private key; CLIProxyAPI persists it under its configured `auth-dir`, matching its built-in providers and the Gemini CLI plugin.
 - Exposes OAuth tokens plus conventional `expired` and `last_refresh` timestamps in CPA's runtime auth metadata so scheduled and 401-triggered refreshes use the host's per-auth lock, persistence, and retry lifecycle. `RefreshAuth` returns rotated credentials for CPA to save atomically.
 - Mints and caches 15-minute device tickets through `POST /v1/device/session`.
@@ -112,7 +113,8 @@ Open the Mirasim OAuth action in Management Center. CPA calls `/v0/management/mi
 
 1. Mirasim redirects back with `state`, `access_token` (or `token`), and `refresh_token` query parameters.
 2. A one-time plugin resource callback validates the 256-bit state and keeps the tokens only in bounded process memory for at most three minutes.
-3. CPA's existing `/v0/management/get-auth-status` polling invokes the plugin, which generates an Ed25519 device key and returns a self-contained `StorageJSON`; CPA saves it as `mirasim.json` in `auth-dir`.
+3. CPA's existing `/v0/management/get-auth-status` polling invokes the plugin, which generates an Ed25519 device key and validates the complete token/signature/ticket chain against `GET /v1/models`.
+4. After validation, the plugin returns self-contained `StorageJSON`. CPA saves it under `auth-dir` as `mirasim-<account-id>.json`, or `mirasim-<device-fingerprint>.json` when the validated token has no stable account claim.
 
 The generic CPA callback stores authorization codes only, so this plugin uses its own `/v0/resource/plugins/<plugin-id>/oauth/callback` resource for Mirasim's direct-token callback. No CLIProxyAPI core patch is required. The callback immediately redirects the browser to a token-free URL after accepting it.
 
@@ -140,6 +142,8 @@ OAuth produces the following auth shape. Secret values are abbreviated below:
   "refresh_token": "<refresh-token>",
   "expired": "2026-09-03T13:00:00Z",
   "last_refresh": "2026-09-03T12:00:00Z",
+  "account_id": "<validated-account-id-if-present>",
+  "email": "<validated-email-if-present>",
   "device_private_key": "<Ed25519-PKCS8-PEM>",
   "relay_url": "https://relay.mirasim.ai",
   "admin_url": "https://auth.mirasim.ai",
@@ -149,6 +153,8 @@ OAuth produces the following auth shape. Secret values are abbreviated below:
 ```
 
 There is no directory-path fallback or import path. After upgrading from a path-only release, delete the obsolete Mirasim auth entry and complete OAuth login again.
+
+Multiple Mirasim accounts can coexist in the same CPA `auth-dir`. Repeating OAuth for an account with the same stable claim replaces that account's file; accounts without a stable claim use their generated device identity and therefore receive separate files.
 
 ## Rate-limit signals
 
@@ -207,7 +213,7 @@ The frontend integration and its upgrade boundary are documented in [ADR 0004](d
 - Incoming `Authorization`, `Proxy-Authorization`, and `X-Api-Key` values are removed before Mirasim authentication headers are injected.
 - Incoming `x-mirasim-*` values are removed, and ordinary relay metadata is sent only inside `x-mirasim-enc`.
 
-The provider boundaries are recorded in [ADR 0001](docs/decisions/0001-mirasim-provider-boundaries.md), the v2 authentication design in [ADR 0003](docs/decisions/0003-adopt-mirasim-v2-authentication-envelope.md), the quota-page integration in [ADR 0004](docs/decisions/0004-integrate-quota-with-management-center.md), the OAuth design in [ADR 0005](docs/decisions/0005-implement-mirasim-oauth-login.md), and the CPA-managed credential-storage decision in [ADR 0006](docs/decisions/0006-store-credentials-in-cpa-auth-json.md).
+The provider boundaries are recorded in [ADR 0001](docs/decisions/0001-mirasim-provider-boundaries.md), the v2 authentication design in [ADR 0003](docs/decisions/0003-adopt-mirasim-v2-authentication-envelope.md), the quota-page integration in [ADR 0004](docs/decisions/0004-integrate-quota-with-management-center.md), the OAuth design in [ADR 0005](docs/decisions/0005-implement-mirasim-oauth-login.md), the CPA-managed credential-storage decision in [ADR 0006](docs/decisions/0006-store-credentials-in-cpa-auth-json.md), and account-specific validated persistence in [ADR 0009](docs/decisions/0009-validate-oauth-and-name-auths-by-account.md).
 
 ## License
 

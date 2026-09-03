@@ -29,6 +29,8 @@ type Storage struct {
 	RefreshToken     string         `json:"refresh_token,omitempty"`
 	Expired          string         `json:"expired,omitempty"`
 	LastRefresh      string         `json:"last_refresh,omitempty"`
+	AccountID        string         `json:"account_id,omitempty"`
+	Email            string         `json:"email,omitempty"`
 	DevicePrivateKey string         `json:"device_private_key,omitempty"`
 	RelayURL         string         `json:"relay_url,omitempty"`
 	AdminURL         string         `json:"admin_url,omitempty"`
@@ -89,6 +91,8 @@ func (s *Storage) applyDefaults() {
 	s.RefreshToken = strings.TrimSpace(s.RefreshToken)
 	s.Expired = normalizeTimestamp(s.Expired)
 	s.LastRefresh = normalizeTimestamp(s.LastRefresh)
+	s.AccountID = strings.TrimSpace(s.AccountID)
+	s.Email = strings.TrimSpace(s.Email)
 	s.DevicePrivateKey = strings.TrimSpace(s.DevicePrivateKey)
 	s.RelayURL = strings.TrimRight(strings.TrimSpace(s.RelayURL), "/")
 	s.AdminURL = strings.TrimRight(strings.TrimSpace(s.AdminURL), "/")
@@ -133,6 +137,8 @@ func (s Storage) JSON() []byte {
 	setOrDelete(out, "refresh_token", strings.TrimSpace(s.RefreshToken))
 	setOrDelete(out, "expired", strings.TrimSpace(s.Expired))
 	setOrDelete(out, "last_refresh", strings.TrimSpace(s.LastRefresh))
+	setOrDelete(out, "account_id", strings.TrimSpace(s.AccountID))
+	setOrDelete(out, "email", strings.TrimSpace(s.Email))
 	setOrDelete(out, "device_private_key", strings.TrimSpace(s.DevicePrivateKey))
 	setOrDelete(out, "relay_url", strings.TrimSpace(s.RelayURL))
 	setOrDelete(out, "admin_url", strings.TrimSpace(s.AdminURL))
@@ -149,7 +155,7 @@ func (s Storage) Key() string {
 func (s Storage) AuthData(id, fileName string, nextRefresh time.Time) pluginapi.AuthData {
 	fileName = filepath.Base(strings.TrimSpace(fileName))
 	if fileName == "" || fileName == "." {
-		fileName = "mirasim.json"
+		fileName = s.DefaultAuthFileName()
 	}
 	if strings.TrimSpace(id) == "" {
 		id = fileName
@@ -158,7 +164,7 @@ func (s Storage) AuthData(id, fileName string, nextRefresh time.Time) pluginapi.
 		Provider:    Provider,
 		ID:          id,
 		FileName:    fileName,
-		Label:       "Mirasim",
+		Label:       s.AuthLabel(),
 		Prefix:      strings.TrimSpace(stringValue(s.Raw["prefix"])),
 		ProxyURL:    strings.TrimSpace(stringValue(s.Raw["proxy_url"])),
 		Disabled:    boolValue(s.Raw["disabled"]),
@@ -170,12 +176,107 @@ func (s Storage) AuthData(id, fileName string, nextRefresh time.Time) pluginapi.
 			"refresh_token": strings.TrimSpace(s.RefreshToken),
 			"expired":       strings.TrimSpace(s.Expired),
 			"last_refresh":  strings.TrimSpace(s.LastRefresh),
+			"account_id":    strings.TrimSpace(s.AccountID),
+			"email":         strings.TrimSpace(s.Email),
 		},
 		Attributes: map[string]string{
 			"auth_kind": "oauth",
 		},
 		NextRefreshAfter: nextRefresh,
 	}
+}
+
+// PopulateIdentityFromAccessToken copies only stable account fields from the
+// token. Callers must validate the token with Mirasim before persisting or
+// displaying the resulting identity.
+func (s *Storage) PopulateIdentityFromAccessToken() {
+	if s == nil {
+		return
+	}
+	claims := jwtClaims(s.AccessToken)
+	if strings.TrimSpace(s.AccountID) == "" {
+		s.AccountID = firstClaimString(claims, "account_id", "accountId", "user_id", "userId", "sub")
+	}
+	if strings.TrimSpace(s.Email) == "" {
+		s.Email = firstClaimString(claims, "email")
+	}
+	s.AccountID = strings.TrimSpace(s.AccountID)
+	s.Email = strings.TrimSpace(s.Email)
+}
+
+// DefaultAuthFileName mirrors CPA's account-specific OAuth files. If Mirasim
+// omits account claims, the generated device identity provides a stable,
+// collision-resistant fallback for this login.
+func (s Storage) DefaultAuthFileName() string {
+	identity := strings.TrimSpace(s.AccountID)
+	if identity == "" {
+		identity = strings.ToLower(strings.TrimSpace(s.Email))
+	}
+	component := safeFileComponent(identity)
+	if component == "" {
+		component = deviceFingerprint(s.DevicePrivateKey)
+	}
+	return "mirasim-" + component + ".json"
+}
+
+func (s Storage) AuthLabel() string {
+	if email := strings.TrimSpace(s.Email); email != "" {
+		return "Mirasim (" + email + ")"
+	}
+	if accountID := strings.TrimSpace(s.AccountID); accountID != "" {
+		return "Mirasim (" + abbreviatedIdentity(accountID) + ")"
+	}
+	return "Mirasim (device " + abbreviatedIdentity(deviceFingerprint(s.DevicePrivateKey)) + ")"
+}
+
+func safeFileComponent(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	for _, char := range value {
+		allowed := (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '.' || char == '_' || char == '-' || char == '@'
+		if allowed {
+			builder.WriteRune(char)
+		} else if builder.Len() > 0 && !strings.HasSuffix(builder.String(), "-") {
+			builder.WriteByte('-')
+		}
+		if builder.Len() >= 64 {
+			break
+		}
+	}
+	return strings.Trim(builder.String(), ".-_")
+}
+
+func abbreviatedIdentity(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 12 {
+		return value
+	}
+	return value[:12]
+}
+
+func jwtClaims(token string) map[string]any {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) < 2 {
+		return nil
+	}
+	payload, errDecode := base64.RawURLEncoding.DecodeString(parts[1])
+	if errDecode != nil {
+		return nil
+	}
+	var claims map[string]any
+	if errJSON := json.Unmarshal(payload, &claims); errJSON != nil {
+		return nil
+	}
+	return claims
+}
+
+func firstClaimString(claims map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := claims[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 // RecordTokenTiming stores the conventional CPA OAuth timestamps after login

@@ -111,7 +111,7 @@ func (p *Provider) StartLogin(_ context.Context, req pluginapi.AuthLoginStartReq
 	}, nil
 }
 
-func (p *Provider) PollLogin(_ context.Context, req pluginapi.AuthLoginPollRequest) (pluginapi.AuthLoginPollResponse, error) {
+func (p *Provider) PollLogin(ctx context.Context, req pluginapi.AuthLoginPollRequest) (pluginapi.AuthLoginPollResponse, error) {
 	state := strings.TrimSpace(req.State)
 	now := p.oauth.now()
 
@@ -142,16 +142,8 @@ func (p *Provider) PollLogin(_ context.Context, req pluginapi.AuthLoginPollReque
 	session.finalizing = true
 	p.oauth.mu.Unlock()
 
-	storage, errStorage := credentials.InstallOAuth(credentials.FromSettings(p.settings), accessToken, refreshToken)
+	storage, errStorage := p.finalizeOAuthStorage(ctx, p.settings, accessToken, refreshToken, req.Host.ProxyURL, req.HTTPClient)
 	accessToken, refreshToken = "", ""
-	if errStorage == nil {
-		client := p.pool.Client(storage)
-		if errProxy := client.SetAuthProxy(req.Host.ProxyURL); errProxy != nil {
-			errStorage = errProxy
-		} else if errValidate := client.Validate(); errValidate != nil {
-			errStorage = errValidate
-		}
-	}
 
 	p.oauth.mu.Lock()
 	defer p.oauth.mu.Unlock()
@@ -164,7 +156,8 @@ func (p *Provider) PollLogin(_ context.Context, req pluginapi.AuthLoginPollReque
 		session.errorMessage = errStorage.Error()
 		return oauthPollError(session.errorMessage), nil
 	}
-	auth := storage.AuthData("mirasim.json", "mirasim.json", p.pool.Client(storage).NextRefreshAfter(now))
+	fileName := storage.DefaultAuthFileName()
+	auth := storage.AuthData(fileName, fileName, p.pool.Client(storage).NextRefreshAfter(now))
 	session.auth = &auth
 	return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusSuccess, Message: "Mirasim OAuth login completed", Auth: auth, Auths: []pluginapi.AuthData{auth}}, nil
 }

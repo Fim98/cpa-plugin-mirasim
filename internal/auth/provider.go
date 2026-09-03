@@ -71,6 +71,25 @@ func (p *Provider) RefreshAuth(ctx context.Context, req pluginapi.AuthRefreshReq
 	return pluginapi.AuthRefreshResponse{Auth: auth, NextRefreshAfter: next}, nil
 }
 
+func (p *Provider) finalizeOAuthStorage(ctx context.Context, settings pluginconfig.Settings, accessToken, refreshToken, proxyURL string, hostClient pluginapi.HostHTTPClient) (credentials.Storage, error) {
+	storage, errStorage := credentials.InstallOAuth(credentials.FromSettings(settings), accessToken, refreshToken)
+	if errStorage != nil {
+		return credentials.Storage{}, errStorage
+	}
+	// Identity claims affect only naming and labels after this token has passed
+	// the authenticated relay validation below.
+	storage.PopulateIdentityFromAccessToken()
+	client := p.pool.Client(storage)
+	if errValidate := client.Validate(); errValidate != nil {
+		return credentials.Storage{}, errValidate
+	}
+	if errRemote := client.ValidateRemote(ctx, hostClient, proxyURL); errRemote != nil {
+		p.pool.Forget(storage)
+		return credentials.Storage{}, errRemote
+	}
+	return client.Storage(), nil
+}
+
 func (p *Provider) RegisterCommandLine(context.Context, pluginapi.CommandLineRegistrationRequest) (pluginapi.CommandLineRegistrationResponse, error) {
 	return pluginapi.CommandLineRegistrationResponse{Flags: []pluginapi.CommandLineFlag{
 		{Name: "mirasim-login", Usage: "Run Mirasim browser OAuth login.", Type: "bool", DefaultValue: "false"},
