@@ -12,7 +12,7 @@ func TestBuildDeclaresProviderCapabilities(t *testing.T) {
 		t.Fatalf("metadata = %#v", built.Metadata)
 	}
 	caps := built.Capabilities
-	if caps.AuthProvider == nil || caps.ModelProvider == nil || caps.Executor == nil || caps.CommandLinePlugin == nil || caps.ManagementAPI == nil {
+	if caps.AuthProvider == nil || caps.ModelProvider == nil || caps.Executor == nil || caps.ThinkingApplier == nil || caps.CommandLinePlugin == nil || caps.ManagementAPI == nil {
 		t.Fatalf("capabilities are incomplete: %#v", caps)
 	}
 	if caps.ExecutorModelScope != pluginapi.ExecutorModelScopeOAuth {

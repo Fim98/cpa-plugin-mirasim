@@ -82,6 +82,7 @@ type abiCapabilities struct {
 	ExecutorModelScope    pluginapi.ExecutorModelScope `json:"executor_model_scope"`
 	ExecutorInputFormats  []string                     `json:"executor_input_formats,omitempty"`
 	ExecutorOutputFormats []string                     `json:"executor_output_formats,omitempty"`
+	ThinkingApplier       bool                         `json:"thinking_applier"`
 	CommandLinePlugin     bool                         `json:"command_line_plugin"`
 	ManagementAPI         bool                         `json:"management_api"`
 }
@@ -118,6 +119,11 @@ type abiExecutorRequest struct {
 
 type abiExecutorHTTPRequest struct {
 	pluginapi.ExecutorHTTPRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type abiThinkingApplyRequest struct {
+	pluginapi.ThinkingApplyRequest
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
@@ -265,7 +271,7 @@ func handleABIMethod(ctx context.Context, method string, request []byte) ([]byte
 		return nil, errPlugin
 	}
 	switch method {
-	case pluginabi.MethodAuthIdentifier, pluginabi.MethodExecutorIdentifier:
+	case pluginabi.MethodAuthIdentifier, pluginabi.MethodExecutorIdentifier, pluginabi.MethodThinkingIdentifier:
 		return abiOKEnvelope(abiIdentifierResponse{Identifier: p.Identifier()})
 	case pluginabi.MethodAuthParse:
 		var req pluginapi.AuthParseRequest
@@ -360,6 +366,13 @@ func handleABIMethod(ctx context.Context, method string, request []byte) ([]byte
 		req.HTTPClient = abiHostHTTPClient{callbackID: rpcReq.HostCallbackID}
 		resp, errCall := p.HttpRequest(ctx, req)
 		return abiOKEnvelopeWithError(resp, errCall)
+	case pluginabi.MethodThinkingApply:
+		var rpcReq abiThinkingApplyRequest
+		if errDecode := json.Unmarshal(request, &rpcReq); errDecode != nil {
+			return nil, errDecode
+		}
+		resp, errCall := p.ApplyThinking(ctx, rpcReq.ThinkingApplyRequest)
+		return abiOKEnvelopeWithError(resp, errCall)
 	case pluginabi.MethodCommandLineRegister:
 		var req pluginapi.CommandLineRegistrationRequest
 		if errDecode := json.Unmarshal(request, &req); errDecode != nil {
@@ -420,6 +433,7 @@ func handleRegister(request []byte) ([]byte, error) {
 			ExecutorModelScope:    built.Capabilities.ExecutorModelScope,
 			ExecutorInputFormats:  append([]string(nil), built.Capabilities.ExecutorInputFormats...),
 			ExecutorOutputFormats: append([]string(nil), built.Capabilities.ExecutorOutputFormats...),
+			ThinkingApplier:       built.Capabilities.ThinkingApplier != nil,
 			CommandLinePlugin:     built.Capabilities.CommandLinePlugin != nil,
 			ManagementAPI:         built.Capabilities.ManagementAPI != nil,
 		},

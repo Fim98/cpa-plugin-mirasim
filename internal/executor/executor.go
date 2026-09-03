@@ -15,6 +15,7 @@ import (
 	pluginconfig "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/config"
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/credentials"
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/mirasim"
+	thinkingpkg "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/thinking"
 )
 
 var SupportedFormats = []string{
@@ -188,7 +189,8 @@ type providerRoute struct {
 }
 
 func buildProviderRequest(req pluginapi.ExecutorRequest, stream bool) ([]byte, providerRoute, error) {
-	model := normalizeModel(req.Model)
+	parsedModel := thinkingpkg.ParseModel(req.Model)
+	model := parsedModel.ModelName
 	source := sourceFormat(req)
 	wire := selectWireFormat(model, source)
 	body, errTranslate := translateRequest(source, wire, model, req.Payload, stream)
@@ -198,6 +200,12 @@ func buildProviderRequest(req pluginapi.ExecutorRequest, stream bool) ([]byte, p
 	body, errNormalize := normalizeBody(body, model, stream, wire)
 	if errNormalize != nil {
 		return nil, providerRoute{}, errNormalize
+	}
+	if parsedModel.HasConfig {
+		body, errNormalize = thinkingpkg.ApplyForWire(body, model, wire.String(), parsedModel.Config)
+		if errNormalize != nil {
+			return nil, providerRoute{}, errNormalize
+		}
 	}
 	path := "/v1/responses"
 	if wire == sdktranslator.FormatClaude {
@@ -411,8 +419,9 @@ func normalizeHTTPRequestBody(body []byte, model string, wire sdktranslator.Form
 	if errDecode := json.Unmarshal(body, &payload); errDecode != nil {
 		return nil, fmt.Errorf("decode Mirasim HTTP request: %w", errDecode)
 	}
-	if model != "" {
-		payload["model"] = normalizeModel(model)
+	parsedModel := thinkingpkg.ParseModel(model)
+	if parsedModel.ModelName != "" {
+		payload["model"] = parsedModel.ModelName
 	}
 	if wire == sdktranslator.FormatClaude {
 		delete(payload, "output_config")
@@ -420,6 +429,13 @@ func normalizeHTTPRequestBody(body []byte, model string, wire sdktranslator.Form
 	updated, errMarshal := json.Marshal(payload)
 	if errMarshal != nil {
 		return nil, fmt.Errorf("encode Mirasim HTTP request: %w", errMarshal)
+	}
+	if parsedModel.HasConfig {
+		updated, errApply := thinkingpkg.ApplyForWire(updated, parsedModel.ModelName, wire.String(), parsedModel.Config)
+		if errApply != nil {
+			return nil, errApply
+		}
+		return updated, nil
 	}
 	return updated, nil
 }
@@ -432,11 +448,7 @@ func cloneHeaders(source http.Header) http.Header {
 }
 
 func normalizeModel(model string) string {
-	model = strings.TrimSpace(model)
-	for strings.HasPrefix(strings.ToLower(model), "mirasim/") {
-		model = strings.TrimSpace(model[len("mirasim/"):])
-	}
-	return model
+	return thinkingpkg.ParseModel(model).ModelName
 }
 
 func modelFromJSON(body []byte) string {
@@ -444,7 +456,7 @@ func modelFromJSON(body []byte) string {
 		Model string `json:"model"`
 	}
 	_ = json.Unmarshal(body, &payload)
-	return normalizeModel(payload.Model)
+	return strings.TrimSpace(payload.Model)
 }
 
 func cloneValues(source url.Values) url.Values {

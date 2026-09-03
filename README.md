@@ -17,6 +17,7 @@ The implementation follows the current [CLIProxyAPI plugin contract](https://git
 - Retries one relay HTTP 401 with a fresh device ticket, then delegates credential refresh and request retry to CPA.
 - Loads the live model catalog from `GET /v1/models`, publishes only `claude-*` entries, and uses a static five-model Claude fallback for startup discovery.
 - Accepts and emits CLIProxyAPI's `openai`, `openai-response`, `claude`, `gemini`, and `codex` formats.
+- Implements CPA model-suffix thinking controls after protocol translation: Codex `reasoning.effort`, Claude adaptive on/off, and legacy Claude token budgets. Requests the relay cannot represent faithfully return HTTP 400 instead of silently changing effort.
 - Preserves streaming SSE and translates tool definitions, tool selection, tool calls, and tool continuations through CLIProxyAPI's built-in translators.
 - Exposes the Mirasim rate-limit signals through a read-only plugin management route and ships a companion Management Center adapter for `management.html#/quota`.
 
@@ -35,6 +36,16 @@ Codex Responses uses upstream SSE even for a non-streaming downstream request. F
 Catalog presence is not proof that every model is currently routable. Relay capacity and accepted request shape remain time-sensitive upstream behavior.
 
 The GPT/Codex execution path remains implemented for compatibility work, but GPT models are intentionally filtered from both static and per-auth model discovery. CLIProxyAPI therefore advertises only Claude models. See [ADR 0002](docs/decisions/0002-publish-claude-only-model-catalog.md).
+
+## Thinking controls
+
+CPA-style model suffixes are removed before the request reaches Mirasim. Examples include `gpt-5.6-sol(high)`, `gpt-5.6-terra(8192)`, `claude-sonnet-5(auto)`, and `claude-haiku-4-5(2048)`.
+
+- GPT models sent through Codex Responses receive `reasoning.effort`; numeric budgets are mapped to CPA's named effort thresholds.
+- Adaptive Claude models accept `(auto)`, `(high)`, and `(none)`. The relay currently rejects Claude `output_config.effort`, so other named efforts return a clear HTTP 400 rather than silently becoming the default high effort.
+- Manual-thinking Claude models receive `thinking.type=enabled` plus `budget_tokens`; the plugin enforces the Anthropic minimum and the `budget_tokens < max_tokens` constraint.
+
+The protocol boundary and rejected alternatives are recorded in [ADR 0010](docs/decisions/0010-apply-thinking-at-the-mirasim-wire-boundary.md).
 
 ## Authentication envelope
 

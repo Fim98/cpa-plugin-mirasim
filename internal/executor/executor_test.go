@@ -142,6 +142,84 @@ func TestClaudeNormalizationDropsUnsupportedOutputConfig(t *testing.T) {
 	}
 }
 
+func TestBuildProviderRequestAppliesThinkingSuffixAfterTranslation(t *testing.T) {
+	tests := []struct {
+		name       string
+		model      string
+		format     sdktranslator.Format
+		payload    string
+		wantPath   string
+		wantField  string
+		wantString string
+		wantBudget int64
+	}{
+		{
+			name:       "adaptive Claude auto",
+			model:      "mirasim/claude-sonnet-5(auto)",
+			format:     sdktranslator.FormatClaude,
+			payload:    `{"model":"mirasim/claude-sonnet-5(auto)","max_tokens":4096,"messages":[{"role":"user","content":"hello"}]}`,
+			wantPath:   "/v1/messages",
+			wantField:  "thinking.type",
+			wantString: "adaptive",
+		},
+		{
+			name:       "manual Claude budget",
+			model:      "claude-haiku-4-5(2048)",
+			format:     sdktranslator.FormatClaude,
+			payload:    `{"model":"claude-haiku-4-5(2048)","max_tokens":4096,"messages":[{"role":"user","content":"hello"}]}`,
+			wantPath:   "/v1/messages",
+			wantField:  "thinking.type",
+			wantString: "enabled",
+			wantBudget: 2048,
+		},
+		{
+			name:       "Codex named effort",
+			model:      "gpt-5.6-sol(high)",
+			format:     sdktranslator.FormatOpenAIResponse,
+			payload:    `{"model":"gpt-5.6-sol(high)","input":"hello"}`,
+			wantPath:   "/v1/responses",
+			wantField:  "reasoning.effort",
+			wantString: "high",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body, route, errBuild := buildProviderRequest(pluginapi.ExecutorRequest{
+				Model:        test.model,
+				SourceFormat: test.format.String(),
+				Format:       test.format.String(),
+				Payload:      []byte(test.payload),
+			}, false)
+			if errBuild != nil {
+				t.Fatal(errBuild)
+			}
+			if route.Path != test.wantPath {
+				t.Fatalf("route = %#v", route)
+			}
+			if got := jsonPathString(body, test.wantField); got != test.wantString {
+				t.Fatalf("%s = %q, body = %s", test.wantField, got, body)
+			}
+			if test.wantBudget > 0 && jsonPathInt(body, "thinking.budget_tokens") != test.wantBudget {
+				t.Fatalf("thinking budget = %d, body = %s", jsonPathInt(body, "thinking.budget_tokens"), body)
+			}
+			if got := jsonPathString(body, "model"); got != normalizeModel(test.model) {
+				t.Fatalf("model = %q, body = %s", got, body)
+			}
+		})
+	}
+}
+
+func TestBuildProviderRequestRejectsUnsupportedClaudeEffort(t *testing.T) {
+	_, _, errBuild := buildProviderRequest(pluginapi.ExecutorRequest{
+		Model:        "claude-sonnet-5(low)",
+		SourceFormat: sdktranslator.FormatClaude.String(),
+		Payload:      []byte(`{"model":"claude-sonnet-5(low)","max_tokens":4096,"messages":[{"role":"user","content":"hello"}]}`),
+	}, false)
+	if errBuild == nil || !strings.Contains(errBuild.Error(), "cannot represent Claude thinking effort") {
+		t.Fatalf("error = %v", errBuild)
+	}
+}
+
 func TestHTTPRequestNormalizationPreservesExplicitStreamValue(t *testing.T) {
 	body, errNormalize := normalizeHTTPRequestBody(
 		[]byte(`{"model":"mirasim/gpt-5.6-sol","stream":false,"input":"hello"}`),
@@ -156,6 +234,42 @@ func TestHTTPRequestNormalizationPreservesExplicitStreamValue(t *testing.T) {
 	if decoded["stream"] != false || decoded["model"] != "gpt-5.6-sol" {
 		t.Fatalf("body = %s", body)
 	}
+}
+
+func jsonPathString(body []byte, path string) string {
+	var value any
+	var decoded map[string]any
+	if json.Unmarshal(body, &decoded) != nil {
+		return ""
+	}
+	value = decoded
+	for _, part := range strings.Split(path, ".") {
+		object, ok := value.(map[string]any)
+		if !ok {
+			return ""
+		}
+		value = object[part]
+	}
+	text, _ := value.(string)
+	return text
+}
+
+func jsonPathInt(body []byte, path string) int64 {
+	var value any
+	var decoded map[string]any
+	if json.Unmarshal(body, &decoded) != nil {
+		return 0
+	}
+	value = decoded
+	for _, part := range strings.Split(path, ".") {
+		object, ok := value.(map[string]any)
+		if !ok {
+			return 0
+		}
+		value = object[part]
+	}
+	number, _ := value.(float64)
+	return int64(number)
 }
 
 func TestTranslatorPreservesToolSelectionAndContinuation(t *testing.T) {

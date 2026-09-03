@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/management"
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/mirasim"
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/models"
+	thinkingpkg "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/thinking"
 )
 
 type MirasimPlugin struct {
@@ -18,6 +19,7 @@ type MirasimPlugin struct {
 	models     *models.Provider
 	executor   *executor.Executor
 	management *management.Handler
+	thinking   *thinkingpkg.Applier
 }
 
 func Build(configYAML []byte) pluginapi.Plugin {
@@ -29,6 +31,7 @@ func Build(configYAML []byte) pluginapi.Plugin {
 		models:     models.New(settings, pool),
 		executor:   executor.New(settings, pool),
 		management: management.New(settings, pool, authProvider),
+		thinking:   thinkingpkg.NewApplier(),
 	}
 	return pluginapi.Plugin{
 		Metadata: pluginapi.Metadata{
@@ -50,6 +53,7 @@ func Build(configYAML []byte) pluginapi.Plugin {
 			ExecutorModelScope:    pluginapi.ExecutorModelScopeOAuth,
 			ExecutorInputFormats:  append([]string(nil), executor.SupportedFormats...),
 			ExecutorOutputFormats: append([]string(nil), executor.SupportedFormats...),
+			ThinkingApplier:       p,
 			CommandLinePlugin:     p,
 			ManagementAPI:         p,
 		},
@@ -98,6 +102,10 @@ func (p *MirasimPlugin) HttpRequest(ctx context.Context, req pluginapi.ExecutorH
 	return p.executor.HttpRequest(ctx, req)
 }
 
+func (p *MirasimPlugin) ApplyThinking(ctx context.Context, req pluginapi.ThinkingApplyRequest) (pluginapi.PayloadResponse, error) {
+	return p.thinking.ApplyThinking(ctx, req)
+}
+
 func (p *MirasimPlugin) RegisterCommandLine(ctx context.Context, req pluginapi.CommandLineRegistrationRequest) (pluginapi.CommandLineRegistrationResponse, error) {
 	return p.auth.RegisterCommandLine(ctx, req)
 }
@@ -117,5 +125,6 @@ func (p *MirasimPlugin) HandleManagement(ctx context.Context, req pluginapi.Mana
 var _ pluginapi.AuthProvider = (*MirasimPlugin)(nil)
 var _ pluginapi.ModelProvider = (*MirasimPlugin)(nil)
 var _ pluginapi.ProviderExecutor = (*MirasimPlugin)(nil)
+var _ pluginapi.ThinkingApplier = (*MirasimPlugin)(nil)
 var _ pluginapi.CommandLinePlugin = (*MirasimPlugin)(nil)
 var _ pluginapi.ManagementAPI = (*MirasimPlugin)(nil)

@@ -27,8 +27,16 @@ func TestABIRegisterAndManagementRoute(t *testing.T) {
 	if errDecode := json.Unmarshal(envelope.Result, &registration); errDecode != nil {
 		t.Fatalf("decode registration: %v", errDecode)
 	}
-	if registration.SchemaVersion != pluginabi.SchemaVersion || !registration.Capabilities.ManagementAPI || !registration.Capabilities.Executor {
+	if registration.SchemaVersion != pluginabi.SchemaVersion || !registration.Capabilities.ManagementAPI || !registration.Capabilities.Executor || !registration.Capabilities.ThinkingApplier {
 		t.Fatalf("registration = %#v", registration)
+	}
+
+	raw, errThinking := handleABIMethod(context.Background(), pluginabi.MethodThinkingApply, []byte(`{"model":{"ID":"gpt-5.6-sol"},"config":{"Mode":"level","Level":"high"},"body":"e30="}`))
+	if errThinking != nil {
+		t.Fatalf("thinking apply error = %v", errThinking)
+	}
+	if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil || !envelope.OK {
+		t.Fatalf("thinking envelope = %s, error = %v", raw, errDecode)
 	}
 
 	raw, errModels := handleABIMethod(context.Background(), pluginabi.MethodModelStatic, []byte(`{}`))
