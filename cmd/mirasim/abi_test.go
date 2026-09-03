@@ -50,7 +50,7 @@ func TestABIRegisterAndManagementRoute(t *testing.T) {
 	if errDecode := json.Unmarshal(envelope.Result, &modelResponse); errDecode != nil {
 		t.Fatalf("decode static models: %v", errDecode)
 	}
-	if len(modelResponse.Models) != 8 {
+	if len(modelResponse.Models) != 10 {
 		t.Fatalf("static models = %#v", modelResponse.Models)
 	}
 	for _, model := range modelResponse.Models {

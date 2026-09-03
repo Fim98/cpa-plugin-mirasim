@@ -12,7 +12,9 @@ import (
 
 var fallbackModelIDs = []string{
 	"claude-fable-5",
+	"claude-fable-5-1",
 	"claude-haiku-4-5",
+	"claude-opus-4-6",
 	"claude-opus-4-8",
 	"claude-opus-5",
 	"claude-sonnet-5",
@@ -42,10 +44,22 @@ var modelDefinitions = map[string]modelDefinition{
 		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking", "output_config"},
 		thinking: adaptiveRelayThinking(), modelType: "claude", owner: "anthropic",
 	},
+	"claude-fable-5-1": {
+		displayName: "Claude Fable 5.1", context: 1000000, output: 128000,
+		description: "Anthropic long-context agentic model with adaptive effort via Mirasim",
+		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking", "output_config"},
+		thinking: adaptiveRelayThinking(), modelType: "claude", owner: "anthropic",
+	},
 	"claude-haiku-4-5": {
 		displayName: "Claude 4.5 Haiku", created: 1759276800, context: 200000, output: 64000,
 		description: "Anthropic fast Claude model with adaptive effort and manual extended thinking via Mirasim",
 		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "temperature", "top_p", "top_k", "tools", "tool_choice", "thinking", "output_config"},
+		thinking: adaptiveManualRelayThinking(), modelType: "claude", owner: "anthropic",
+	},
+	"claude-opus-4-6": {
+		displayName: "Claude 4.6 Opus", created: 1770318000, context: 1000000, output: 128000,
+		description: "Anthropic premium model combining maximum intelligence with practical performance via Mirasim",
+		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking", "output_config"},
 		thinking: adaptiveManualRelayThinking(), modelType: "claude", owner: "anthropic",
 	},
 	"claude-opus-4-8": {

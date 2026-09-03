@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-09-03
+Accepted — 2026-09-03; model-roster item 5 superseded by [ADR 0016](0016-track-current-mirasim-model-roster.md), thinking item 7 superseded by [ADR 0015](0015-forward-claude-adaptive-effort.md)
 
 ## Context
 

@@ -39,7 +39,7 @@ func TestStaticModelsExposeClaudeAndGPTFallback(t *testing.T) {
 			t.Fatalf("unexpected model family: %#v", model)
 		}
 	}
-	if claudeCount != 5 || gptCount != 3 {
+	if claudeCount != 7 || gptCount != 3 {
 		t.Fatalf("fallback family counts: Claude=%d GPT=%d", claudeCount, gptCount)
 	}
 	byID := make(map[string]pluginapi.ModelInfo, len(resp.Models))
@@ -53,6 +53,14 @@ func TestStaticModelsExposeClaudeAndGPTFallback(t *testing.T) {
 	haiku := byID["claude-haiku-4-5"]
 	if haiku.ContextLength != 200000 || haiku.MaxCompletionTokens != 64000 || haiku.Thinking == nil || haiku.Thinking.Min != 1024 || haiku.Thinking.Max != 128000 || !haiku.Thinking.DynamicAllowed || len(haiku.Thinking.Levels) != 5 {
 		t.Fatalf("Claude Haiku 4.5 metadata = %#v", haiku)
+	}
+	fable := byID["claude-fable-5-1"]
+	if fable.ContextLength != 1000000 || fable.MaxCompletionTokens != 128000 || fable.Thinking == nil || !fable.Thinking.DynamicAllowed || fable.Thinking.Min != 0 {
+		t.Fatalf("Claude Fable 5.1 metadata = %#v", fable)
+	}
+	opus := byID["claude-opus-4-6"]
+	if opus.Created != 1770318000 || opus.ContextLength != 1000000 || opus.MaxCompletionTokens != 128000 || opus.Thinking == nil || opus.Thinking.Min != 1024 || opus.Thinking.Max != 128000 || !opus.Thinking.DynamicAllowed {
+		t.Fatalf("Claude Opus 4.6 metadata = %#v", opus)
 	}
 }
 

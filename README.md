@@ -16,7 +16,7 @@ The implementation follows the current [CLIProxyAPI plugin contract](https://git
 - Seals normal relay-request signature and session metadata into `x-mirasim-enc` with `mrs-seal-v1` (X25519, HKDF-SHA256, and ChaCha20-Poly1305).
 - Removes a leading `mirasim/` model prefix and preserves Claude `output_config`, including adaptive effort.
 - Retries one relay HTTP 401 with a fresh device ticket, then delegates credential refresh and request retry to CPA.
-- Loads the live model catalog from `GET /v1/models`, publishes both `claude-*` and `gpt-*` entries, and uses the five verified Claude plus three verified GPT models as the static startup fallback.
+- Loads the live model catalog from `GET /v1/models`, publishes both `claude-*` and `gpt-*` entries, and uses the seven verified Claude plus three verified GPT models as the static startup fallback.
 - Enriches known live and fallback models with family, display name, context/output limits, generation methods, supported parameters, and relay-accurate thinking metadata.
 - Accepts and emits CLIProxyAPI's `openai`, `openai-response`, `claude`, `gemini`, and `codex` formats.
 - Implements CPA model-suffix thinking controls after protocol translation: Codex `reasoning.effort`, Claude adaptive effort/on/off, and legacy Claude token budgets. Requests the relay cannot represent faithfully return HTTP 400 instead of silently changing effort.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-09-03; routing item 3 superseded by [ADR 0013](0013-route-published-models-by-family.md)
+Accepted — 2026-09-03; fallback-roster item 2 superseded by [ADR 0016](0016-track-current-mirasim-model-roster.md), routing item 3 superseded by [ADR 0013](0013-route-published-models-by-family.md)
 
 Supersedes [ADR 0002](0002-publish-claude-only-model-catalog.md).
 
