@@ -154,8 +154,10 @@ func (s Storage) AuthData(id, fileName string, nextRefresh time.Time) pluginapi.
 		Disabled:    boolValue(s.Raw["disabled"]),
 		StorageJSON: s.JSON(),
 		Metadata: map[string]any{
-			"type":      Provider,
-			"auth_kind": "oauth",
+			"type":          Provider,
+			"auth_kind":     "oauth",
+			"access_token":  strings.TrimSpace(s.AccessToken),
+			"refresh_token": strings.TrimSpace(s.RefreshToken),
 		},
 		Attributes: map[string]string{
 			"auth_kind": "oauth",

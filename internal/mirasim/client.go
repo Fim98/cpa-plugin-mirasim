@@ -309,67 +309,63 @@ func (c *Client) ticketLocked(ctx context.Context, client pluginapi.HostHTTPClie
 	if c.ticket != "" && now.Before(c.ticketExpiresAt.Add(-ticketRefreshLead)) {
 		return c.ticket, nil
 	}
-	if errToken := c.ensureAccessTokenLocked(ctx); errToken != nil {
+	if errToken := c.ensureAccessTokenLocked(); errToken != nil {
 		return "", errToken
 	}
-	for attempt := 0; attempt < 2; attempt++ {
-		body, errMarshal := json.Marshal(struct {
-			PublicKey string `json:"publicKey"`
-			DeviceID  string `json:"deviceId"`
-		}{PublicKey: c.publicKeyBase64, DeviceID: c.deviceID})
-		if errMarshal != nil {
-			return "", errMarshal
-		}
-		signed, errSign := c.signatureHeadersLocked(http.MethodPost, sessionPath, c.accessToken, nil, body)
-		if errSign != nil {
-			return "", errSign
-		}
-		signed.Set("Authorization", "Bearer "+c.accessToken)
-		signed.Set("Content-Type", "application/json")
-		endpoint, _, errURL := c.endpoint(sessionPath, nil)
-		if errURL != nil {
-			return "", errURL
-		}
-		resp, errDo := client.Do(ctx, pluginapi.HTTPRequest{Method: http.MethodPost, URL: endpoint, Headers: signed, Body: body})
-		if errDo != nil {
-			return "", fmt.Errorf("mint Mirasim device ticket: %w", errDo)
-		}
-		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
-			if errRefresh := c.refreshAccessLocked(ctx); errRefresh != nil {
-				return "", errRefresh
-			}
-			continue
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return "", NewStatusError(resp.StatusCode, resp.Body, resp.Headers)
-		}
-		var payload struct {
-			Ticket    string `json:"ticket"`
-			ExpiresIn int64  `json:"expiresIn"`
-		}
-		if errDecode := json.Unmarshal(resp.Body, &payload); errDecode != nil {
-			return "", fmt.Errorf("decode Mirasim device ticket: %w", errDecode)
-		}
-		payload.Ticket = strings.TrimSpace(payload.Ticket)
-		if payload.Ticket == "" {
-			return "", fmt.Errorf("Mirasim device ticket response is missing ticket")
-		}
-		if payload.ExpiresIn <= 0 {
-			payload.ExpiresIn = 900
-		}
-		c.ticket = payload.Ticket
-		c.ticketExpiresAt = time.Now().Add(time.Duration(payload.ExpiresIn) * time.Second)
-		return c.ticket, nil
+	body, errMarshal := json.Marshal(struct {
+		PublicKey string `json:"publicKey"`
+		DeviceID  string `json:"deviceId"`
+	}{PublicKey: c.publicKeyBase64, DeviceID: c.deviceID})
+	if errMarshal != nil {
+		return "", errMarshal
 	}
-	return "", fmt.Errorf("mint Mirasim device ticket retry exhausted")
+	signed, errSign := c.signatureHeadersLocked(http.MethodPost, sessionPath, c.accessToken, nil, body)
+	if errSign != nil {
+		return "", errSign
+	}
+	signed.Set("Authorization", "Bearer "+c.accessToken)
+	signed.Set("Content-Type", "application/json")
+	endpoint, _, errURL := c.endpoint(sessionPath, nil)
+	if errURL != nil {
+		return "", errURL
+	}
+	resp, errDo := client.Do(ctx, pluginapi.HTTPRequest{Method: http.MethodPost, URL: endpoint, Headers: signed, Body: body})
+	if errDo != nil {
+		return "", fmt.Errorf("mint Mirasim device ticket: %w", errDo)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", NewStatusError(resp.StatusCode, resp.Body, resp.Headers)
+	}
+	var payload struct {
+		Ticket    string `json:"ticket"`
+		ExpiresIn int64  `json:"expiresIn"`
+	}
+	if errDecode := json.Unmarshal(resp.Body, &payload); errDecode != nil {
+		return "", fmt.Errorf("decode Mirasim device ticket: %w", errDecode)
+	}
+	payload.Ticket = strings.TrimSpace(payload.Ticket)
+	if payload.Ticket == "" {
+		return "", fmt.Errorf("Mirasim device ticket response is missing ticket")
+	}
+	if payload.ExpiresIn <= 0 {
+		payload.ExpiresIn = 900
+	}
+	c.ticket = payload.Ticket
+	c.ticketExpiresAt = time.Now().Add(time.Duration(payload.ExpiresIn) * time.Second)
+	return c.ticket, nil
 }
 
-func (c *Client) ensureAccessTokenLocked(ctx context.Context) error {
+func (c *Client) ensureAccessTokenLocked() error {
 	now := time.Now()
-	if c.accessToken != "" && now.Before(c.accessExpiresAt.Add(-accessRefreshLead)) {
+	if c.accessToken == "" {
+		return NewStatusError(http.StatusUnauthorized, []byte(`{"error":"Mirasim access token is missing"}`), nil)
+	}
+	// Opaque access tokens remain usable until the device-session endpoint
+	// rejects them. JWTs refresh through CPA before entering their expiry lead.
+	if c.accessExpiresAt.IsZero() || now.Before(c.accessExpiresAt.Add(-accessRefreshLead)) {
 		return nil
 	}
-	return c.refreshAccessLocked(ctx)
+	return NewStatusError(http.StatusUnauthorized, []byte(`{"error":"Mirasim access token requires refresh"}`), nil)
 }
 
 func (c *Client) refreshAccessLocked(ctx context.Context) error {

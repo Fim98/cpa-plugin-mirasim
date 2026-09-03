@@ -8,12 +8,12 @@ The implementation follows the current [CLIProxyAPI plugin contract](https://git
 
 - Supports Management Center browser OAuth and local command-line OAuth with GitHub or Google, matching Mirasim's current sign-in providers.
 - Returns one self-contained provider auth JSON after OAuth, including the access token, refresh token, and generated Ed25519 private key; CLIProxyAPI persists it under its configured `auth-dir`, matching its built-in providers and the Gemini CLI plugin.
-- Refreshes access and rotated refresh tokens through `POST /auth/refresh` and returns the updated provider storage for CPA to persist.
+- Exposes OAuth tokens in CPA's runtime auth metadata so scheduled and 401-triggered refreshes use the host's per-auth lock, persistence, and retry lifecycle. `RefreshAuth` returns rotated credentials for CPA to save atomically.
 - Mints and caches 15-minute device tickets through `POST /v1/device/session`.
 - Signs requests with the `mrs-sig-v2` Ed25519 protocol and binds the current bearer credential, client version, metadata, and body.
 - Seals normal relay-request signature and session metadata into `x-mirasim-enc` with `mrs-seal-v1` (X25519, HKDF-SHA256, and ChaCha20-Poly1305).
 - Removes a leading `mirasim/` model prefix and removes unsupported Claude `output_config` fields.
-- Retries one upstream HTTP 401 with a fresh device ticket.
+- Retries one relay HTTP 401 with a fresh device ticket, then delegates credential refresh and request retry to CPA.
 - Loads the live model catalog from `GET /v1/models`, publishes only `claude-*` entries, and uses a static five-model Claude fallback for startup discovery.
 - Accepts and emits CLIProxyAPI's `openai`, `openai-response`, `claude`, `gemini`, and `codex` formats.
 - Preserves streaming SSE and translates tool definitions, tool selection, tool calls, and tool continuations through CLIProxyAPI's built-in translators.

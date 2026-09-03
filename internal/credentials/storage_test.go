@@ -85,6 +85,9 @@ func TestParseSelfContainedStoragePreservesHostFields(t *testing.T) {
 	if !auth.Disabled || auth.ProxyURL != "http://proxy.example" {
 		t.Fatalf("host fields were not preserved: disabled=%t proxy=%q", auth.Disabled, auth.ProxyURL)
 	}
+	if auth.Metadata["access_token"] != "access" || auth.Metadata["refresh_token"] != "refresh" {
+		t.Fatal("runtime metadata does not expose credentials to CPA's refresh coordinator")
+	}
 }
 
 func TestParseIgnoresOtherProviders(t *testing.T) {

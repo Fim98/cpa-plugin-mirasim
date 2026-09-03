@@ -102,8 +102,8 @@ func TestRefreshAuthReturnsRotatedCredentialsForHostPersistence(t *testing.T) {
 	if response.Auth.Metadata["custom_metadata"] != "preserved" {
 		t.Fatal("RefreshAuth() lost host-managed metadata")
 	}
-	if _, copied := response.Auth.Metadata["access_token"]; copied {
-		t.Fatal("RefreshAuth() copied a credential into host metadata")
+	if response.Auth.Metadata["access_token"] != "new-access" || response.Auth.Metadata["refresh_token"] != "new-refresh" {
+		t.Fatal("RefreshAuth() did not return rotated credentials in CPA runtime metadata")
 	}
 	if response.Auth.Attributes["custom_attribute"] != "preserved" || response.Auth.Attributes["auth_kind"] != "oauth" {
 		t.Fatal("RefreshAuth() lost standard or host-managed attributes")

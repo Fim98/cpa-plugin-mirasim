@@ -193,6 +193,50 @@ func TestDoRetriesOneUnauthorizedResponseWithFreshTicket(t *testing.T) {
 	}
 }
 
+func TestDoDelegatesAccessTokenRefreshToHost(t *testing.T) {
+	storage, _, _ := newTestStorage(t, jwtWithExpiry(time.Now().Add(time.Minute)))
+	client := NewClient(storage)
+	hostCalls := 0
+	host := fakeHostClient{do: func(_ context.Context, _ pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		hostCalls++
+		return pluginapi.HTTPResponse{}, nil
+	}}
+
+	_, errDo := client.Do(context.Background(), host, http.MethodPost, "/v1/messages", nil, nil, []byte(`{"model":"claude-sonnet-5"}`))
+	if errDo == nil {
+		t.Fatal("Do() accepted an access token inside the refresh lead")
+	}
+	statusErr, ok := errDo.(interface{ StatusCode() int })
+	if !ok || statusErr.StatusCode() != http.StatusUnauthorized {
+		t.Fatalf("Do() error = %v, want host-refreshable HTTP 401", errDo)
+	}
+	if hostCalls != 0 {
+		t.Fatalf("host calls = %d, want no relay request before CPA refresh", hostCalls)
+	}
+}
+
+func TestDeviceSessionUnauthorizedDoesNotRefreshInsideRequest(t *testing.T) {
+	accessToken := futureJWT()
+	storage, _, _ := newTestStorage(t, accessToken)
+	client := NewClient(storage)
+	host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		parsed, _ := url.Parse(req.URL)
+		if parsed.Path != sessionPath {
+			t.Fatalf("unexpected request path %s", parsed.Path)
+		}
+		return pluginapi.HTTPResponse{StatusCode: http.StatusUnauthorized, Headers: make(http.Header), Body: []byte(`{"error":"expired"}`)}, nil
+	}}
+
+	_, errDo := client.Do(context.Background(), host, http.MethodPost, "/v1/messages", nil, nil, []byte(`{"model":"claude-sonnet-5"}`))
+	statusErr, ok := errDo.(interface{ StatusCode() int })
+	if !ok || statusErr.StatusCode() != http.StatusUnauthorized {
+		t.Fatalf("Do() error = %v, want host-refreshable HTTP 401", errDo)
+	}
+	if client.Storage().AccessToken != accessToken {
+		t.Fatal("request path mutated provider storage instead of delegating refresh to CPA")
+	}
+}
+
 func TestRefreshAccessRotatesInMemoryStorageAndDoesNotLeakErrorBody(t *testing.T) {
 	storage, _, _ := newTestStorage(t, futureJWT())
 	var expected atomic.Value
