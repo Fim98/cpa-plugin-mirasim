@@ -9,6 +9,7 @@ The implementation follows the current [CLIProxyAPI plugin contract](https://git
 - Supports Management Center browser OAuth and local command-line OAuth with GitHub or Google, matching Mirasim's current sign-in providers.
 - Verifies each completed OAuth login by minting a device ticket and reading `GET /v1/models` before returning credentials to CPA.
 - Returns one self-contained provider auth JSON after OAuth, including the access token, refresh token, and generated Ed25519 private key; CLIProxyAPI persists it under its configured `auth-dir`, matching its built-in providers and the Gemini CLI plugin.
+- Versions that self-contained OAuth JSON with `storage_version`; unversioned self-contained records migrate lazily through CPA's normal refresh save, while path-only credential records remain intentionally unsupported.
 - Exposes OAuth tokens plus conventional `expired` and `last_refresh` timestamps in CPA's runtime auth metadata so scheduled and 401-triggered refreshes use the host's per-auth lock, persistence, and retry lifecycle. `RefreshAuth` returns rotated credentials for CPA to save atomically.
 - Mints and caches 15-minute device tickets through `POST /v1/device/session`.
 - Signs requests with the `mrs-sig-v2` Ed25519 protocol and binds the current bearer credential, client version, metadata, and body.
@@ -16,6 +17,7 @@ The implementation follows the current [CLIProxyAPI plugin contract](https://git
 - Removes a leading `mirasim/` model prefix and removes unsupported Claude `output_config` fields.
 - Retries one relay HTTP 401 with a fresh device ticket, then delegates credential refresh and request retry to CPA.
 - Loads the live model catalog from `GET /v1/models`, publishes only `claude-*` entries, and uses a static five-model Claude fallback for startup discovery.
+- Enriches known live and fallback models with family, display name, context/output limits, generation methods, supported parameters, and relay-accurate thinking metadata.
 - Accepts and emits CLIProxyAPI's `openai`, `openai-response`, `claude`, `gemini`, and `codex` formats.
 - Implements CPA model-suffix thinking controls after protocol translation: Codex `reasoning.effort`, Claude adaptive on/off, and legacy Claude token budgets. Requests the relay cannot represent faithfully return HTTP 400 instead of silently changing effort.
 - Preserves streaming SSE and translates tool definitions, tool selection, tool calls, and tool continuations through CLIProxyAPI's built-in translators.
@@ -148,6 +150,7 @@ OAuth produces the following auth shape. Secret values are abbreviated below:
 
 ```json
 {
+  "storage_version": 1,
   "type": "mirasim",
   "access_token": "<access-token>",
   "refresh_token": "<refresh-token>",
@@ -166,6 +169,8 @@ OAuth produces the following auth shape. Secret values are abbreviated below:
 There is no directory-path fallback or import path. After upgrading from a path-only release, delete the obsolete Mirasim auth entry and complete OAuth login again.
 
 Multiple Mirasim accounts can coexist in the same CPA `auth-dir`. Repeating OAuth for an account with the same stable claim replaces that account's file; accounts without a stable claim use their generated device identity and therefore receive separate files.
+
+An unversioned self-contained Mirasim OAuth JSON is accepted and normalized to `storage_version: 1` in runtime. CPA writes the normalized form on the next scheduled or 401-triggered refresh. A higher or malformed version is rejected rather than guessed. This migration does not restore the removed directory/import workflow; see [ADR 0011](docs/decisions/0011-version-oauth-storage-and-publish-model-capabilities.md).
 
 ## Rate-limit signals
 
@@ -224,7 +229,7 @@ The frontend integration and its upgrade boundary are documented in [ADR 0004](d
 - Incoming `Authorization`, `Proxy-Authorization`, and `X-Api-Key` values are removed before Mirasim authentication headers are injected.
 - Incoming `x-mirasim-*` values are removed, and ordinary relay metadata is sent only inside `x-mirasim-enc`.
 
-The provider boundaries are recorded in [ADR 0001](docs/decisions/0001-mirasim-provider-boundaries.md), the v2 authentication design in [ADR 0003](docs/decisions/0003-adopt-mirasim-v2-authentication-envelope.md), the quota-page integration in [ADR 0004](docs/decisions/0004-integrate-quota-with-management-center.md), the OAuth design in [ADR 0005](docs/decisions/0005-implement-mirasim-oauth-login.md), the CPA-managed credential-storage decision in [ADR 0006](docs/decisions/0006-store-credentials-in-cpa-auth-json.md), and account-specific validated persistence in [ADR 0009](docs/decisions/0009-validate-oauth-and-name-auths-by-account.md).
+The provider boundaries are recorded in [ADR 0001](docs/decisions/0001-mirasim-provider-boundaries.md), the v2 authentication design in [ADR 0003](docs/decisions/0003-adopt-mirasim-v2-authentication-envelope.md), the quota-page integration in [ADR 0004](docs/decisions/0004-integrate-quota-with-management-center.md), the OAuth design in [ADR 0005](docs/decisions/0005-implement-mirasim-oauth-login.md), the CPA-managed credential-storage decision in [ADR 0006](docs/decisions/0006-store-credentials-in-cpa-auth-json.md), account-specific validated persistence in [ADR 0009](docs/decisions/0009-validate-oauth-and-name-auths-by-account.md), the thinking boundary in [ADR 0010](docs/decisions/0010-apply-thinking-at-the-mirasim-wire-boundary.md), and versioned storage/model metadata in [ADR 0011](docs/decisions/0011-version-oauth-storage-and-publish-model-capabilities.md).
 
 ## License
 

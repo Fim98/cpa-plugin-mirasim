@@ -18,6 +18,68 @@ var fallbackModelIDs = []string{
 	"claude-sonnet-5",
 }
 
+type modelDefinition struct {
+	displayName string
+	version     string
+	description string
+	created     int64
+	context     int64
+	output      int64
+	methods     []string
+	parameters  []string
+	thinking    *pluginapi.ThinkingSupport
+	modelType   string
+	owner       string
+}
+
+var modelDefinitions = map[string]modelDefinition{
+	"claude-fable-5": {
+		displayName: "Claude Fable 5", created: 1781049600, context: 1000000, output: 128000,
+		description: "Anthropic model for demanding reasoning and long-horizon agentic work via Mirasim",
+		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking"},
+		thinking: adaptiveRelayThinking(), modelType: "claude", owner: "anthropic",
+	},
+	"claude-haiku-4-5": {
+		displayName: "Claude 4.5 Haiku", created: 1759276800, context: 200000, output: 64000,
+		description: "Anthropic fast Claude model with manual extended thinking via Mirasim",
+		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "temperature", "top_p", "top_k", "tools", "tool_choice", "thinking"},
+		thinking: &pluginapi.ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true}, modelType: "claude", owner: "anthropic",
+	},
+	"claude-opus-4-8": {
+		displayName: "Claude Opus 4.8", created: 1779984000, context: 1000000, output: 128000,
+		description: "Anthropic premium reasoning model via Mirasim",
+		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking"},
+		thinking: adaptiveRelayThinking(), modelType: "claude", owner: "anthropic",
+	},
+	"claude-opus-5": {
+		displayName: "Claude Opus 5", created: 1784038800, context: 1000000, output: 128000,
+		description: "Anthropic premium agentic and reasoning model via Mirasim",
+		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking"},
+		thinking: adaptiveRelayThinking(), modelType: "claude", owner: "anthropic",
+	},
+	"claude-sonnet-5": {
+		displayName: "Claude Sonnet 5", created: 1782777600, context: 1000000, output: 128000,
+		description: "Anthropic agentic Sonnet model for coding and tool use via Mirasim",
+		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking"},
+		thinking: adaptiveRelayThinking(), modelType: "claude", owner: "anthropic",
+	},
+	"gpt-5.6-luna": {
+		displayName: "GPT 5.6 Luna", version: "gpt-5.6", created: 1783616400, context: 372000, output: 128000,
+		description: "Fast and affordable OpenAI agentic coding model via Mirasim",
+		methods:     []string{"responses"}, parameters: []string{"tools", "thinking"}, thinking: codexThinking(), modelType: "openai", owner: "openai",
+	},
+	"gpt-5.6-sol": {
+		displayName: "GPT 5.6 Sol", version: "gpt-5.6", created: 1783616400, context: 372000, output: 128000,
+		description: "OpenAI frontier agentic coding model via Mirasim",
+		methods:     []string{"responses"}, parameters: []string{"tools", "thinking"}, thinking: codexThinking(), modelType: "openai", owner: "openai",
+	},
+	"gpt-5.6-terra": {
+		displayName: "GPT 5.6 Terra", version: "gpt-5.6", created: 1783616400, context: 372000, output: 128000,
+		description: "Balanced OpenAI agentic coding model via Mirasim",
+		methods:     []string{"responses"}, parameters: []string{"tools", "thinking"}, thinking: codexThinking(), modelType: "openai", owner: "openai",
+	},
+}
+
 type Provider struct {
 	settings pluginconfig.Settings
 	pool     *mirasim.Pool
@@ -74,23 +136,89 @@ func isExposedModel(id string) bool {
 
 func modelInfo(id, object string, created int64, owner string) pluginapi.ModelInfo {
 	id = strings.TrimSpace(id)
+	definition, known := modelDefinitions[strings.ToLower(id)]
 	if object == "" {
 		object = "model"
 	}
 	if owner == "" {
+		owner = definition.owner
+	}
+	if owner == "" {
 		owner = "mirasim"
+	}
+	if created == 0 {
+		created = definition.created
+	}
+	if !known {
+		definition = genericDefinition(id)
 	}
 	return pluginapi.ModelInfo{
 		ID:                         id,
 		Object:                     object,
 		Created:                    created,
 		OwnedBy:                    owner,
-		Type:                       "chat",
-		DisplayName:                id,
+		Type:                       definition.modelType,
+		DisplayName:                firstNonEmpty(definition.displayName, id),
 		Name:                       id,
-		Description:                id + " via Mirasim",
-		SupportedGenerationMethods: []string{"messages"},
+		Version:                    definition.version,
+		Description:                firstNonEmpty(definition.description, id+" via Mirasim"),
+		InputTokenLimit:            definition.context,
+		OutputTokenLimit:           definition.output,
+		SupportedGenerationMethods: cloneStrings(definition.methods),
+		ContextLength:              definition.context,
+		MaxCompletionTokens:        definition.output,
+		SupportedParameters:        cloneStrings(definition.parameters),
 		SupportedInputModalities:   []string{"text"},
 		SupportedOutputModalities:  []string{"text"},
+		Thinking:                   cloneThinking(definition.thinking),
 	}
+}
+
+func genericDefinition(id string) modelDefinition {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(id)), "claude-") {
+		return modelDefinition{
+			modelType: "claude", methods: []string{"messages", "countTokens"},
+			parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice"},
+		}
+	}
+	return modelDefinition{
+		modelType: "openai", methods: []string{"responses"}, parameters: []string{"tools"},
+	}
+}
+
+func adaptiveRelayThinking() *pluginapi.ThinkingSupport {
+	return &pluginapi.ThinkingSupport{ZeroAllowed: true, DynamicAllowed: true, Levels: []string{"high"}}
+}
+
+func codexThinking() *pluginapi.ThinkingSupport {
+	return &pluginapi.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh", "max"}}
+}
+
+func cloneThinking(value *pluginapi.ThinkingSupport) *pluginapi.ThinkingSupport {
+	if value == nil {
+		return nil
+	}
+	return &pluginapi.ThinkingSupport{
+		Min:            value.Min,
+		Max:            value.Max,
+		ZeroAllowed:    value.ZeroAllowed,
+		DynamicAllowed: value.DynamicAllowed,
+		Levels:         cloneStrings(value.Levels),
+	}
+}
+
+func cloneStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	return append([]string(nil), values...)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

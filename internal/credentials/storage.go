@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,11 +20,14 @@ import (
 
 const Provider = "mirasim"
 
+const CurrentStorageVersion = 1
+
 const opaqueAccessTokenLifetime = 30 * time.Minute
 
 // Storage is the provider-owned OAuth payload persisted by CLIProxyAPI in
 // auth-dir.
 type Storage struct {
+	StorageVersion   int            `json:"storage_version,omitempty"`
 	Type             string         `json:"type"`
 	AccessToken      string         `json:"access_token,omitempty"`
 	RefreshToken     string         `json:"refresh_token,omitempty"`
@@ -62,8 +66,15 @@ func Parse(raw []byte, defaults pluginconfig.Settings) (*Storage, error) {
 	if !strings.EqualFold(strings.TrimSpace(stringValue(probe["type"])), Provider) {
 		return nil, nil
 	}
+	if errMigrate := migrateStorageMap(probe); errMigrate != nil {
+		return nil, errMigrate
+	}
+	normalizedRaw, errMarshal := json.Marshal(probe)
+	if errMarshal != nil {
+		return nil, fmt.Errorf("normalize Mirasim auth: %w", errMarshal)
+	}
 	var storage Storage
-	if errUnmarshal := json.Unmarshal(raw, &storage); errUnmarshal != nil {
+	if errUnmarshal := json.Unmarshal(normalizedRaw, &storage); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode Mirasim auth: %w", errUnmarshal)
 	}
 	storage.Raw = cloneMap(probe)
@@ -86,6 +97,7 @@ func Parse(raw []byte, defaults pluginconfig.Settings) (*Storage, error) {
 }
 
 func (s *Storage) applyDefaults() {
+	s.StorageVersion = CurrentStorageVersion
 	s.Type = Provider
 	s.AccessToken = strings.TrimSpace(s.AccessToken)
 	s.RefreshToken = strings.TrimSpace(s.RefreshToken)
@@ -132,6 +144,9 @@ func (s Storage) JSON() []byte {
 		out = make(map[string]any)
 	}
 	delete(out, "credential_dir")
+	delete(out, "credential_mode")
+	delete(out, "expiry")
+	out["storage_version"] = CurrentStorageVersion
 	out["type"] = Provider
 	setOrDelete(out, "access_token", strings.TrimSpace(s.AccessToken))
 	setOrDelete(out, "refresh_token", strings.TrimSpace(s.RefreshToken))
@@ -170,19 +185,70 @@ func (s Storage) AuthData(id, fileName string, nextRefresh time.Time) pluginapi.
 		Disabled:    boolValue(s.Raw["disabled"]),
 		StorageJSON: s.JSON(),
 		Metadata: map[string]any{
-			"type":          Provider,
-			"auth_kind":     "oauth",
-			"access_token":  strings.TrimSpace(s.AccessToken),
-			"refresh_token": strings.TrimSpace(s.RefreshToken),
-			"expired":       strings.TrimSpace(s.Expired),
-			"last_refresh":  strings.TrimSpace(s.LastRefresh),
-			"account_id":    strings.TrimSpace(s.AccountID),
-			"email":         strings.TrimSpace(s.Email),
+			"storage_version": CurrentStorageVersion,
+			"type":            Provider,
+			"auth_kind":       "oauth",
+			"access_token":    strings.TrimSpace(s.AccessToken),
+			"refresh_token":   strings.TrimSpace(s.RefreshToken),
+			"expired":         strings.TrimSpace(s.Expired),
+			"last_refresh":    strings.TrimSpace(s.LastRefresh),
+			"account_id":      strings.TrimSpace(s.AccountID),
+			"email":           strings.TrimSpace(s.Email),
 		},
 		Attributes: map[string]string{
 			"auth_kind": "oauth",
 		},
 		NextRefreshAfter: nextRefresh,
+	}
+}
+
+// migrateStorageMap upgrades only self-contained CPA OAuth JSON. It never
+// reads or imports the obsolete credential-directory representation.
+func migrateStorageMap(values map[string]any) error {
+	version, errVersion := parsedStorageVersion(values["storage_version"])
+	if errVersion != nil {
+		return fmt.Errorf("decode Mirasim auth storage_version: %w", errVersion)
+	}
+	if version > CurrentStorageVersion {
+		return fmt.Errorf("unsupported Mirasim auth storage_version %d (current %d)", version, CurrentStorageVersion)
+	}
+	if strings.TrimSpace(stringValue(values["expired"])) == "" {
+		if legacyExpiry := strings.TrimSpace(stringValue(values["expiry"])); legacyExpiry != "" {
+			values["expired"] = legacyExpiry
+		}
+	}
+	delete(values, "expiry")
+	delete(values, "credential_dir")
+	delete(values, "credential_mode")
+	values["storage_version"] = CurrentStorageVersion
+	values["auth_kind"] = "oauth"
+	return nil
+}
+
+func parsedStorageVersion(value any) (int, error) {
+	if value == nil {
+		return 0, nil
+	}
+	switch typed := value.(type) {
+	case float64:
+		version := int(typed)
+		if typed != float64(version) || version < 0 {
+			return 0, fmt.Errorf("must be a non-negative integer")
+		}
+		return version, nil
+	case json.Number:
+		version, errParse := strconv.Atoi(string(typed))
+		if errParse != nil || version < 0 {
+			return 0, fmt.Errorf("must be a non-negative integer")
+		}
+		return version, nil
+	case int:
+		if typed < 0 {
+			return 0, fmt.Errorf("must be a non-negative integer")
+		}
+		return typed, nil
+	default:
+		return 0, fmt.Errorf("must be a non-negative integer")
 	}
 }
 

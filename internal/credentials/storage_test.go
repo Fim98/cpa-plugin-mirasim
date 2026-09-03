@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestInstallOAuthReturnsSelfContainedAuthStorage(t *testing.T) {
 	if errJSON := json.Unmarshal(storage.JSON(), &payload); errJSON != nil {
 		t.Fatal(errJSON)
 	}
-	if payload["access_token"] != "oauth-access" || payload["refresh_token"] != "oauth-refresh" || payload["device_private_key"] == "" || payload["auth_kind"] != "oauth" {
+	if payload["access_token"] != "oauth-access" || payload["refresh_token"] != "oauth-refresh" || payload["device_private_key"] == "" || payload["auth_kind"] != "oauth" || int(payload["storage_version"].(float64)) != CurrentStorageVersion {
 		t.Fatal("auth JSON is missing self-contained credential fields")
 	}
 	if payload["expired"] == "" || payload["last_refresh"] == "" {
@@ -128,6 +129,52 @@ func TestParseSelfContainedStoragePreservesHostFields(t *testing.T) {
 	}
 	if auth.Metadata["access_token"] != "access" || auth.Metadata["refresh_token"] != "refresh" {
 		t.Fatal("runtime metadata does not expose credentials to CPA's refresh coordinator")
+	}
+}
+
+func TestParseMigratesUnversionedSelfContainedStorage(t *testing.T) {
+	expiry := time.Date(2026, 9, 3, 13, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	raw, errMarshal := json.Marshal(map[string]any{
+		"type":               "mirasim",
+		"access_token":       "access",
+		"refresh_token":      "refresh",
+		"device_private_key": testDeviceKey(t),
+		"expiry":             expiry,
+		"credential_dir":     "must-not-survive",
+		"note":               "preserved host metadata",
+	})
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	storage, errParse := Parse(raw, pluginconfig.Defaults())
+	if errParse != nil {
+		t.Fatal(errParse)
+	}
+	if storage.StorageVersion != CurrentStorageVersion || storage.Expired != expiry {
+		t.Fatalf("migrated storage = %#v", storage)
+	}
+	var migrated map[string]any
+	if errDecode := json.Unmarshal(storage.JSON(), &migrated); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if int(migrated["storage_version"].(float64)) != CurrentStorageVersion || migrated["auth_kind"] != "oauth" || migrated["note"] != "preserved host metadata" {
+		t.Fatalf("migrated JSON = %#v", migrated)
+	}
+	if _, exists := migrated["expiry"]; exists {
+		t.Fatalf("legacy expiry survived migration: %#v", migrated)
+	}
+	if _, exists := migrated["credential_dir"]; exists {
+		t.Fatalf("credential directory survived migration: %#v", migrated)
+	}
+}
+
+func TestParseRejectsUnsupportedOrMalformedStorageVersion(t *testing.T) {
+	key := testDeviceKey(t)
+	for _, version := range []string{"2", "-1", "1.5", `"1"`} {
+		raw := []byte(`{"type":"mirasim","storage_version":` + version + `,"access_token":"access","refresh_token":"refresh","device_private_key":` + strconv.Quote(key) + `}`)
+		if _, errParse := Parse(raw, pluginconfig.Defaults()); errParse == nil {
+			t.Fatalf("Parse() accepted storage_version %s", version)
+		}
 	}
 }
 
