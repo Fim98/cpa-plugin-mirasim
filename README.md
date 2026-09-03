@@ -136,7 +136,18 @@ Open the Mirasim OAuth action in Management Center. CPA calls `/v0/management/mi
 
 The generic CPA callback stores authorization codes only, so this plugin uses its own `/v0/resource/plugins/<plugin-id>/oauth/callback` resource for Mirasim's direct-token callback. No CLIProxyAPI core patch is required. The callback immediately redirects the browser to a token-free URL after accepting it.
 
-For a remote Docker installation, the public callback URL must reach the same CPA container through the reverse proxy. Do not set `oauth-public-base-url` to `127.0.0.1` unless the browser and CPA actually run on the same machine.
+For a remote Docker installation, a public callback works only when the Mirasim authentication service has explicitly registered that URI. The current service otherwise accepts only loopback and `*.mirofish.ai` callbacks and returns `redirect_uri 不在白名单` before provider login. If you control that service, add the exact HTTPS callback to `OAUTH_REDIRECT_ALLOWLIST`.
+
+When the callback cannot be registered, build and run the loopback bridge on the same machine as the browser:
+
+```powershell
+go build -o .\dist\mirasim-oauth-bridge.exe .\cmd\mirasim-oauth-bridge
+.\dist\mirasim-oauth-bridge.exe `
+  --listen 127.0.0.1:18317 `
+  --upstream https://cpa.example.com
+```
+
+Configure the remote plugin with `oauth-public-base-url: http://127.0.0.1:18317`, restart CPA, keep the bridge running, and start Mirasim login again from Management Center. The bridge accepts only the two Mirasim OAuth resource paths, strips caller credentials, records no callback data, and forwards the request to CPA over HTTPS. It is needed only during login; CPA still stores the resulting auth JSON in its configured `auth-dir`. See [ADR 0019](docs/decisions/0019-bridge-remote-oauth-through-loopback.md).
 
 If the CPA container cannot connect to `auth.mirasim.ai`, configure CPA's top-level `proxy-url`. The plugin remembers that host proxy for private `/auth/me` and `/auth/refresh` calls while keeping bearer credentials outside CPA's request-recording bridge.
 
