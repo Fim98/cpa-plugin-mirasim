@@ -47,11 +47,11 @@ func TestStaticModelsExposeClaudeAndGPTFallback(t *testing.T) {
 		byID[model.ID] = model
 	}
 	sonnet := byID["claude-sonnet-5"]
-	if sonnet.ContextLength != 1000000 || sonnet.MaxCompletionTokens != 128000 || sonnet.Thinking == nil || !sonnet.Thinking.DynamicAllowed || !sonnet.Thinking.ZeroAllowed || len(sonnet.Thinking.Levels) != 1 || sonnet.Thinking.Levels[0] != "high" {
+	if sonnet.ContextLength != 1000000 || sonnet.MaxCompletionTokens != 128000 || sonnet.Thinking == nil || !sonnet.Thinking.DynamicAllowed || !sonnet.Thinking.ZeroAllowed || len(sonnet.Thinking.Levels) != 5 || sonnet.Thinking.Levels[0] != "low" || sonnet.Thinking.Levels[4] != "max" {
 		t.Fatalf("Claude Sonnet 5 metadata = %#v", sonnet)
 	}
 	haiku := byID["claude-haiku-4-5"]
-	if haiku.ContextLength != 200000 || haiku.MaxCompletionTokens != 64000 || haiku.Thinking == nil || haiku.Thinking.Min != 1024 || haiku.Thinking.Max != 128000 || haiku.Thinking.DynamicAllowed {
+	if haiku.ContextLength != 200000 || haiku.MaxCompletionTokens != 64000 || haiku.Thinking == nil || haiku.Thinking.Min != 1024 || haiku.Thinking.Max != 128000 || !haiku.Thinking.DynamicAllowed || len(haiku.Thinking.Levels) != 5 {
 		t.Fatalf("Claude Haiku 4.5 metadata = %#v", haiku)
 	}
 }

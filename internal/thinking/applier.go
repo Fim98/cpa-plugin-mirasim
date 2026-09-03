@@ -125,29 +125,25 @@ func applyClaude(body []byte, model string, config pluginapi.ThinkingConfig) ([]
 	case "none":
 		body = setString(body, "thinking.type", "disabled")
 		body = deletePath(body, "thinking.budget_tokens")
-		return deletePath(body, "output_config"), nil
+		return deleteClaudeEffort(body), nil
 	case "auto":
 		if supportsAdaptiveClaude(model) {
 			body = setString(body, "thinking.type", "adaptive")
 			body = deletePath(body, "thinking.budget_tokens")
-			return deletePath(body, "output_config"), nil
+			return deleteClaudeEffort(body), nil
 		}
 		return applyManualClaude(body, 1024)
 	case "level":
 		if supportsAdaptiveClaude(model) {
-			// The current Mirasim relay rejects output_config.effort. Omitting
-			// it is exactly Claude's documented default high effort; other
-			// levels cannot be represented faithfully and must not degrade
-			// silently to high.
-			if config.Level != "high" {
+			if !isAdaptiveClaudeEffort(config.Level) {
 				return body, &ConfigError{
-					Code:    "mirasim_claude_effort_unsupported",
-					Message: fmt.Sprintf("Mirasim relay cannot represent Claude thinking effort %q for %s", config.Level, model),
+					Code:    "mirasim_claude_effort_invalid",
+					Message: fmt.Sprintf("unsupported Claude thinking effort %q for %s", config.Level, model),
 				}
 			}
 			body = setString(body, "thinking.type", "adaptive")
 			body = deletePath(body, "thinking.budget_tokens")
-			return deletePath(body, "output_config"), nil
+			return setString(body, "output_config.effort", config.Level), nil
 		}
 		budget, okBudget := levelToBudget(config.Level)
 		if !okBudget {
@@ -182,7 +178,16 @@ func applyManualClaude(body []byte, budget int) ([]byte, error) {
 	}
 	body = setString(body, "thinking.type", "enabled")
 	body = setInt(body, "thinking.budget_tokens", budget)
-	return deletePath(body, "output_config"), nil
+	return deleteClaudeEffort(body), nil
+}
+
+func deleteClaudeEffort(body []byte) []byte {
+	body = deletePath(body, "output_config.effort")
+	outputConfig := gjson.GetBytes(body, "output_config")
+	if outputConfig.Exists() && outputConfig.IsObject() && len(outputConfig.Map()) == 0 {
+		body = deletePath(body, "output_config")
+	}
+	return body
 }
 
 func applyCodex(body []byte, config pluginapi.ThinkingConfig) []byte {
@@ -205,7 +210,9 @@ func applyCodex(body []byte, config pluginapi.ThinkingConfig) []byte {
 }
 
 func supportsAdaptiveClaude(model string) bool {
-	return supportsAdaptiveOnlyClaude(model) || strings.Contains(model, "-4-6")
+	return supportsAdaptiveOnlyClaude(model) ||
+		strings.HasPrefix(model, "claude-haiku-4-5") ||
+		strings.Contains(model, "-4-6")
 }
 
 func supportsAdaptiveOnlyClaude(model string) bool {
@@ -215,6 +222,15 @@ func supportsAdaptiveOnlyClaude(model string) bool {
 		strings.Contains(model, "claude-opus-4-7") ||
 		strings.Contains(model, "claude-opus-4-8") ||
 		strings.HasPrefix(model, "claude-sonnet-5")
+}
+
+func isAdaptiveClaudeEffort(level string) bool {
+	switch level {
+	case "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
 }
 
 func levelToBudget(level string) (int, bool) {

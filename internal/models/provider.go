@@ -39,31 +39,31 @@ var modelDefinitions = map[string]modelDefinition{
 	"claude-fable-5": {
 		displayName: "Claude Fable 5", created: 1781049600, context: 1000000, output: 128000,
 		description: "Anthropic model for demanding reasoning and long-horizon agentic work via Mirasim",
-		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking"},
+		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking", "output_config"},
 		thinking: adaptiveRelayThinking(), modelType: "claude", owner: "anthropic",
 	},
 	"claude-haiku-4-5": {
 		displayName: "Claude 4.5 Haiku", created: 1759276800, context: 200000, output: 64000,
-		description: "Anthropic fast Claude model with manual extended thinking via Mirasim",
-		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "temperature", "top_p", "top_k", "tools", "tool_choice", "thinking"},
-		thinking: &pluginapi.ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true}, modelType: "claude", owner: "anthropic",
+		description: "Anthropic fast Claude model with adaptive effort and manual extended thinking via Mirasim",
+		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "temperature", "top_p", "top_k", "tools", "tool_choice", "thinking", "output_config"},
+		thinking: adaptiveManualRelayThinking(), modelType: "claude", owner: "anthropic",
 	},
 	"claude-opus-4-8": {
 		displayName: "Claude Opus 4.8", created: 1779984000, context: 1000000, output: 128000,
 		description: "Anthropic premium reasoning model via Mirasim",
-		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking"},
+		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking", "output_config"},
 		thinking: adaptiveRelayThinking(), modelType: "claude", owner: "anthropic",
 	},
 	"claude-opus-5": {
 		displayName: "Claude Opus 5", created: 1784038800, context: 1000000, output: 128000,
 		description: "Anthropic premium agentic and reasoning model via Mirasim",
-		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking"},
+		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking", "output_config"},
 		thinking: adaptiveRelayThinking(), modelType: "claude", owner: "anthropic",
 	},
 	"claude-sonnet-5": {
 		displayName: "Claude Sonnet 5", created: 1782777600, context: 1000000, output: 128000,
 		description: "Anthropic agentic Sonnet model for coding and tool use via Mirasim",
-		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking"},
+		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking", "output_config"},
 		thinking: adaptiveRelayThinking(), modelType: "claude", owner: "anthropic",
 	},
 	"gpt-5.6-luna": {
@@ -191,7 +191,15 @@ func genericDefinition(id string) modelDefinition {
 }
 
 func adaptiveRelayThinking() *pluginapi.ThinkingSupport {
-	return &pluginapi.ThinkingSupport{ZeroAllowed: true, DynamicAllowed: true, Levels: []string{"high"}}
+	return &pluginapi.ThinkingSupport{ZeroAllowed: true, DynamicAllowed: true, Levels: claudeEffortLevels()}
+}
+
+func adaptiveManualRelayThinking() *pluginapi.ThinkingSupport {
+	return &pluginapi.ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, DynamicAllowed: true, Levels: claudeEffortLevels()}
+}
+
+func claudeEffortLevels() []string {
+	return []string{"low", "medium", "high", "xhigh", "max"}
 }
 
 func codexThinking() *pluginapi.ThinkingSupport {

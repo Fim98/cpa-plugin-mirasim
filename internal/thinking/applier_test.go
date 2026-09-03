@@ -37,7 +37,7 @@ func TestParseModelUsesCPASuffixConvention(t *testing.T) {
 }
 
 func TestApplyForWireUsesAdaptiveClaudeControls(t *testing.T) {
-	body := []byte(`{"model":"claude-sonnet-5","max_tokens":4096,"messages":[]}`)
+	body := []byte(`{"model":"claude-sonnet-5","max_tokens":4096,"messages":[],"output_config":{"effort":"low","format":{"type":"json_schema"}}}`)
 	auto, errAuto := ApplyForWire(body, "claude-sonnet-5", wireClaude, pluginapi.ThinkingConfig{Mode: "auto", Budget: -1})
 	if errAuto != nil {
 		t.Fatal(errAuto)
@@ -45,8 +45,8 @@ func TestApplyForWireUsesAdaptiveClaudeControls(t *testing.T) {
 	if got := gjson.GetBytes(auto, "thinking.type").String(); got != "adaptive" {
 		t.Fatalf("thinking.type = %q, body = %s", got, auto)
 	}
-	if gjson.GetBytes(auto, "thinking.budget_tokens").Exists() || gjson.GetBytes(auto, "output_config").Exists() {
-		t.Fatalf("adaptive request contains unsupported fields: %s", auto)
+	if gjson.GetBytes(auto, "thinking.budget_tokens").Exists() || gjson.GetBytes(auto, "output_config.effort").Exists() || gjson.GetBytes(auto, "output_config.format.type").String() != "json_schema" {
+		t.Fatalf("adaptive auto request was not normalized safely: %s", auto)
 	}
 
 	disabled, errDisabled := ApplyForWire(auto, "claude-sonnet-5", wireClaude, pluginapi.ThinkingConfig{Mode: "none"})
@@ -58,22 +58,29 @@ func TestApplyForWireUsesAdaptiveClaudeControls(t *testing.T) {
 	}
 
 	high, errHigh := ApplyForWire(body, "claude-sonnet-5", wireClaude, pluginapi.ThinkingConfig{Mode: "level", Level: "high"})
-	if errHigh != nil || gjson.GetBytes(high, "thinking.type").String() != "adaptive" {
+	if errHigh != nil || gjson.GetBytes(high, "thinking.type").String() != "adaptive" || gjson.GetBytes(high, "output_config.effort").String() != "high" {
 		t.Fatalf("high adaptive body = %s, error = %v", high, errHigh)
 	}
 }
 
-func TestApplyForWireRejectsUnrepresentableAdaptiveClaudeEffort(t *testing.T) {
+func TestApplyForWireMapsAdaptiveClaudeEffort(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-5","max_tokens":4096,"messages":[]}`)
-	_, errApply := ApplyForWire(body, "claude-sonnet-5", wireClaude, pluginapi.ThinkingConfig{Mode: "level", Level: "low"})
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+		out, errApply := ApplyForWire(body, "claude-sonnet-5", wireClaude, pluginapi.ThinkingConfig{Mode: "level", Level: effort})
+		if errApply != nil || gjson.GetBytes(out, "thinking.type").String() != "adaptive" || gjson.GetBytes(out, "output_config.effort").String() != effort {
+			t.Fatalf("effort %q body = %s, error = %v", effort, out, errApply)
+		}
+	}
+
+	_, errApply := ApplyForWire(body, "claude-sonnet-5", wireClaude, pluginapi.ThinkingConfig{Mode: "level", Level: "minimal"})
 	var configErr *ConfigError
-	if !errors.As(errApply, &configErr) || configErr.Code != "mirasim_claude_effort_unsupported" || configErr.StatusCode() != 400 {
+	if !errors.As(errApply, &configErr) || configErr.Code != "mirasim_claude_effort_invalid" || configErr.StatusCode() != 400 {
 		t.Fatalf("error = %#v", errApply)
 	}
 }
 
 func TestApplyForWireNormalizesManualClaudeBudget(t *testing.T) {
-	body := []byte(`{"model":"claude-haiku-4-5","max_tokens":2048,"messages":[],"output_config":{"effort":"high"}}`)
+	body := []byte(`{"model":"claude-haiku-4-5","max_tokens":2048,"messages":[],"output_config":{"effort":"high","format":{"type":"json_schema"}}}`)
 	out, errApply := ApplyForWire(body, "claude-haiku-4-5", wireClaude, pluginapi.ThinkingConfig{Mode: "budget", Budget: 4096})
 	if errApply != nil {
 		t.Fatal(errApply)
@@ -84,8 +91,8 @@ func TestApplyForWireNormalizesManualClaudeBudget(t *testing.T) {
 	if got := gjson.GetBytes(out, "thinking.budget_tokens").Int(); got != 2047 {
 		t.Fatalf("thinking.budget_tokens = %d, body = %s", got, out)
 	}
-	if gjson.GetBytes(out, "output_config").Exists() {
-		t.Fatalf("output_config was not removed: %s", out)
+	if gjson.GetBytes(out, "output_config.effort").Exists() || gjson.GetBytes(out, "output_config.format.type").String() != "json_schema" {
+		t.Fatalf("output_config was not preserved without effort: %s", out)
 	}
 }
 

@@ -14,12 +14,12 @@ The implementation follows the current [CLIProxyAPI plugin contract](https://git
 - Mints and caches 15-minute device tickets through `POST /v1/device/session`.
 - Signs requests with the `mrs-sig-v2` Ed25519 protocol and binds the current bearer credential, client version, metadata, and body.
 - Seals normal relay-request signature and session metadata into `x-mirasim-enc` with `mrs-seal-v1` (X25519, HKDF-SHA256, and ChaCha20-Poly1305).
-- Removes a leading `mirasim/` model prefix and removes unsupported Claude `output_config` fields.
+- Removes a leading `mirasim/` model prefix and preserves Claude `output_config`, including adaptive effort.
 - Retries one relay HTTP 401 with a fresh device ticket, then delegates credential refresh and request retry to CPA.
 - Loads the live model catalog from `GET /v1/models`, publishes both `claude-*` and `gpt-*` entries, and uses the five verified Claude plus three verified GPT models as the static startup fallback.
 - Enriches known live and fallback models with family, display name, context/output limits, generation methods, supported parameters, and relay-accurate thinking metadata.
 - Accepts and emits CLIProxyAPI's `openai`, `openai-response`, `claude`, `gemini`, and `codex` formats.
-- Implements CPA model-suffix thinking controls after protocol translation: Codex `reasoning.effort`, Claude adaptive on/off, and legacy Claude token budgets. Requests the relay cannot represent faithfully return HTTP 400 instead of silently changing effort.
+- Implements CPA model-suffix thinking controls after protocol translation: Codex `reasoning.effort`, Claude adaptive effort/on/off, and legacy Claude token budgets. Requests the relay cannot represent faithfully return HTTP 400 instead of silently changing effort.
 - Preserves streaming SSE and translates tool definitions, tool selection, tool calls, and tool continuations through CLIProxyAPI's built-in translators.
 - Reads structured limits from `GET /v1/limits`, falls back to Mirasim's signed Messages response-header probe when necessary, and ships a Management Center adapter for `management.html#/quota`.
 
@@ -44,10 +44,10 @@ Both model families are registered with CLIProxyAPI. Claude models use Messages;
 CPA-style model suffixes are removed before the request reaches Mirasim. Examples include `gpt-5.6-sol(high)`, `gpt-5.6-terra(8192)`, `claude-sonnet-5(auto)`, and `claude-haiku-4-5(2048)`.
 
 - GPT models sent through Codex Responses receive `reasoning.effort`; numeric budgets are mapped to CPA's named effort thresholds.
-- Adaptive Claude models accept `(auto)`, `(high)`, and `(none)`. The relay currently rejects Claude `output_config.effort`, so other named efforts return a clear HTTP 400 rather than silently becoming the default high effort.
+- Adaptive Claude models accept `(auto)`, `(none)`, and the CPA-compatible `(low)`, `(medium)`, `(high)`, `(xhigh)`, and `(max)` levels. Named levels become `thinking.type=adaptive` plus `output_config.effort`; `(auto)` omits only the effort value so Mirasim can choose its default.
 - Manual-thinking Claude models receive `thinking.type=enabled` plus `budget_tokens`; the plugin enforces the Anthropic minimum and the `budget_tokens < max_tokens` constraint.
 
-The protocol boundary and rejected alternatives are recorded in [ADR 0010](docs/decisions/0010-apply-thinking-at-the-mirasim-wire-boundary.md).
+The protocol boundary is recorded in [ADR 0010](docs/decisions/0010-apply-thinking-at-the-mirasim-wire-boundary.md), with current Claude effort behavior in [ADR 0015](docs/decisions/0015-forward-claude-adaptive-effort.md).
 
 ## Authentication envelope
 

@@ -20,6 +20,7 @@ import (
 	pluginconfig "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/config"
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/credentials"
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/mirasim"
+	"github.com/tidwall/gjson"
 )
 
 type executorHostClient struct {
@@ -128,16 +129,16 @@ func TestBuildProviderRequestRoutesByModelAndClientProtocol(t *testing.T) {
 	}
 }
 
-func TestClaudeNormalizationDropsUnsupportedOutputConfig(t *testing.T) {
+func TestClaudeNormalizationPreservesOutputConfig(t *testing.T) {
 	body, route, errBuild := buildProviderRequest(pluginapi.ExecutorRequest{
 		Model:        "claude-sonnet-5",
 		SourceFormat: sdktranslator.FormatClaude.String(),
-		Payload:      []byte(`{"model":"claude-sonnet-5","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"output_config":{"effort":"high"}}`),
+		Payload:      []byte(`{"model":"claude-sonnet-5","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"output_config":{"effort":"high","format":{"type":"json_schema"}}}`),
 	}, false)
 	if errBuild != nil {
 		t.Fatalf("buildProviderRequest() error = %v", errBuild)
 	}
-	if route.Path != "/v1/messages" || strings.Contains(string(body), "output_config") {
+	if route.Path != "/v1/messages" || gjson.GetBytes(body, "output_config.effort").String() != "high" || gjson.GetBytes(body, "output_config.format.type").String() != "json_schema" {
 		t.Fatalf("body = %s, route = %#v", body, route)
 	}
 }
@@ -209,14 +210,14 @@ func TestBuildProviderRequestAppliesThinkingSuffixAfterTranslation(t *testing.T)
 	}
 }
 
-func TestBuildProviderRequestRejectsUnsupportedClaudeEffort(t *testing.T) {
-	_, _, errBuild := buildProviderRequest(pluginapi.ExecutorRequest{
+func TestBuildProviderRequestAppliesClaudeEffort(t *testing.T) {
+	body, _, errBuild := buildProviderRequest(pluginapi.ExecutorRequest{
 		Model:        "claude-sonnet-5(low)",
 		SourceFormat: sdktranslator.FormatClaude.String(),
 		Payload:      []byte(`{"model":"claude-sonnet-5(low)","max_tokens":4096,"messages":[{"role":"user","content":"hello"}]}`),
 	}, false)
-	if errBuild == nil || !strings.Contains(errBuild.Error(), "cannot represent Claude thinking effort") {
-		t.Fatalf("error = %v", errBuild)
+	if errBuild != nil || gjson.GetBytes(body, "thinking.type").String() != "adaptive" || gjson.GetBytes(body, "output_config.effort").String() != "low" {
+		t.Fatalf("body = %s, error = %v", body, errBuild)
 	}
 }
 
@@ -232,6 +233,20 @@ func TestHTTPRequestNormalizationPreservesExplicitStreamValue(t *testing.T) {
 	var decoded map[string]any
 	_ = json.Unmarshal(body, &decoded)
 	if decoded["stream"] != false || decoded["model"] != "gpt-5.6-sol" {
+		t.Fatalf("body = %s", body)
+	}
+}
+
+func TestHTTPRequestNormalizationPreservesClaudeOutputConfig(t *testing.T) {
+	body, errNormalize := normalizeHTTPRequestBody(
+		[]byte(`{"model":"claude-sonnet-5","messages":[],"output_config":{"effort":"max","format":{"type":"json_schema"}}}`),
+		"claude-sonnet-5",
+		sdktranslator.FormatClaude,
+	)
+	if errNormalize != nil {
+		t.Fatalf("normalizeHTTPRequestBody() error = %v", errNormalize)
+	}
+	if gjson.GetBytes(body, "output_config.effort").String() != "max" || gjson.GetBytes(body, "output_config.format.type").String() != "json_schema" {
 		t.Fatalf("body = %s", body)
 	}
 }

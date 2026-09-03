@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-09-03
+Accepted — 2026-09-03; Claude effort and `output_config` decisions superseded by [ADR 0015](0015-forward-claude-adaptive-effort.md)
 
 ## Context
 

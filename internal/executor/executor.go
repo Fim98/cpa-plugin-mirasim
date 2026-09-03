@@ -399,7 +399,6 @@ func normalizeBody(body []byte, model string, stream bool, wire sdktranslator.Fo
 	payload["model"] = normalizeModel(model)
 	if wire == sdktranslator.FormatClaude {
 		payload["stream"] = stream
-		delete(payload, "output_config")
 	} else {
 		// The Codex wire protocol returns SSE even when the downstream request is
 		// non-streaming. Execute aggregates the terminal event for that case.
@@ -431,9 +430,6 @@ func normalizeHTTPRequestBody(body []byte, model string, wire sdktranslator.Form
 	parsedModel := thinkingpkg.ParseModel(model)
 	if parsedModel.ModelName != "" {
 		payload["model"] = parsedModel.ModelName
-	}
-	if wire == sdktranslator.FormatClaude {
-		delete(payload, "output_config")
 	}
 	updated, errMarshal := json.Marshal(payload)
 	if errMarshal != nil {
