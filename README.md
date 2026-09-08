@@ -1,88 +1,12 @@
 # Mirasim Provider Plugin
 
-This plugin adds Mirasim provider support to CLIProxyAPI through its native plugin ABI. It ports the runtime behavior of `mira2api` into the host process: browser OAuth login, CPA-managed auth storage, token refresh, Ed25519 device signatures, encrypted relay metadata, device tickets, dynamic models, Messages/Responses forwarding, protocol translation, streaming, and Mirasim's structured quota signals.
-
-The implementation follows the current [CLIProxyAPI plugin contract](https://github.com/router-for-me/CLIProxyAPI) and the packaging pattern used by [cpa-plugin-gemini-cli](https://github.com/router-for-me/cpa-plugin-gemini-cli).
-
-## Capabilities
-
-- Supports Management Center browser OAuth and local command-line OAuth with GitHub or Google, matching Mirasim's current sign-in providers.
-- Verifies each completed OAuth login by minting a device ticket and reading `GET /v1/models` before returning credentials to CPA.
-- Returns one self-contained provider auth JSON after OAuth, including the access token, refresh token, and generated Ed25519 private key; CLIProxyAPI persists it under its configured `auth-dir`, matching its built-in providers and the Gemini CLI plugin.
-- Versions that self-contained OAuth JSON with `storage_version`; unversioned self-contained records migrate lazily through CPA's normal refresh save, while path-only credential records remain intentionally unsupported.
-- Exposes OAuth tokens plus conventional `expired` and `last_refresh` timestamps in CPA's runtime auth metadata so scheduled and 401-triggered refreshes use the host's per-auth lock, persistence, and retry lifecycle. `RefreshAuth` returns rotated credentials for CPA to save atomically.
-- Tracks `plan` and `plan_exp` from the access token and a best-effort five-minute `GET /auth/me` profile check. A newly changed authoritative mismatch requests one CPA-owned token refresh without looping on the same unchanged result.
-- Mints and caches device tickets through `POST /v1/device/session`, refreshes them two minutes early, accepts `expiresIn` or `expiresAt`, and uses a ten-minute fallback lifetime.
-- Backs off failed ticket mints exponentially up to 30 seconds (or a bounded `Retry-After`), keeps a still-valid ticket during proactive renewal failure, and applies a 30-second relay-refusal floor.
-- Signs requests with the `mrs-sig-v2` Ed25519 protocol and binds the current bearer credential, client version, metadata, and body.
-- Seals normal relay-request signature and session metadata into `x-mirasim-enc` with `mrs-seal-v1` (X25519, HKDF-SHA256, and ChaCha20-Poly1305).
-- Removes a leading `mirasim/` model prefix and preserves Claude `output_config`, including adaptive effort.
-- Retries one relay HTTP 401 with a fresh device ticket, then delegates credential refresh and request retry to CPA.
-- Loads the live model catalog from `GET /v1/models`, publishes both `claude-*` and `gpt-*` entries, and uses the seven verified Claude plus three verified GPT models as the static startup fallback.
-- Enriches known live and fallback models with family, display name, context/output limits, generation methods, supported parameters, and relay-accurate thinking metadata.
-- Accepts and emits CLIProxyAPI's `openai`, `openai-response`, `claude`, `gemini`, and `codex` formats.
-- Implements CPA model-suffix thinking controls after protocol translation: Codex `reasoning.effort`, Claude adaptive effort/on/off, and legacy Claude token budgets. Requests the relay cannot represent faithfully return HTTP 400 instead of silently changing effort.
-- Preserves streaming SSE and translates tool definitions, tool selection, tool calls, and tool continuations through CLIProxyAPI's built-in translators.
-- Reads structured limits from `GET /v1/limits`, falls back to Mirasim's signed Messages response-header probe when necessary, and ships a Management Center adapter for `management.html#/quota`.
-- Accepts Codex's `/backend-api/codex/responses` and `/backend-api/codex/alpha/search` compatibility paths, rewrites them to the relay's `/v1` paths, and removes only Mirasim's relay-incompatible `oauth-2025-04-20` beta token while preserving other Anthropic beta features.
-
-## Protocol routing
-
-Mirasim does not currently expose a usable raw Chat Completions upstream. The plugin therefore selects one of the two verified wire protocols:
-
-| Request | Mirasim wire route |
-|---|---|
-| Any `claude-*` model | `POST /v1/messages` |
-| Any `gpt-*` model, including one selected through Claude Code | `POST /v1/responses` using the Codex wire shape |
-| An unknown model from a Claude-format client | `POST /v1/messages` |
-
-Raw CPA HTTP forwarding also maps `/backend-api/codex/responses` to `/v1/responses` and `/backend-api/codex/alpha/search` to `/v1/alpha/search`, preserving the query string. The latter is signed and labeled as a Codex-agent request.
-
-Codex Responses uses upstream SSE even for a non-streaming downstream request. For non-streaming callers, the plugin collects the terminal `response.completed` or `response.incomplete` event and returns one translated JSON response.
-
-Catalog presence is not proof that every model is currently routable. Relay capacity and accepted request shape remain time-sensitive upstream behavior.
-
-Both model families are registered with CLIProxyAPI. Claude models use Messages; GPT models use the real Codex Responses request shape. The GPT publication decision supersedes the earlier Claude-only rollout boundary; see [ADR 0012](docs/decisions/0012-publish-claude-and-gpt-models.md).
-
-## Functional validation
-
-Do not use a hand-written minimal `POST /v1/messages` request as a functional or availability test for this plugin. In particular, a request that omits Claude Code's query parameters, headers, or complete body shape is not a canonical Claude Code request and is not a supported plugin test vector. Mirasim can reject such a reduced request with HTTP 400 while the real Claude Code path remains healthy.
-
-Validate Claude support end to end with an actual Claude Code client configured to use CPA, require a successful client result, and correlate that invocation with CPA's access log. The currently verified Claude Code route is `POST /v1/messages?beta=true`, but the complete request shape is the contract: merely appending `?beta=true` to a reduced request does not turn it into a valid Claude Code test. When a real-client failure occurs, retain the actual client error and corresponding CPA/plugin log before attempting to reduce the request.
-
-The signed one-token Messages request used by quota collection is a narrow exception. It is Mirasim's official compatibility fallback for reading legacy rate-limit response headers only when `GET /v1/limits` returns 405 or 420. It is not an inference health check and must not be reused to decide whether Claude Code, a model, or the plugin is available; see [ADR 0014](docs/decisions/0014-adopt-structured-mirasim-limits.md).
-
-## Thinking controls
-
-CPA-style model suffixes are removed before the request reaches Mirasim. Examples include `gpt-5.6-sol(high)`, `gpt-5.6-terra(8192)`, `claude-sonnet-5(auto)`, and `claude-haiku-4-5(2048)`.
-
-- GPT models sent through Codex Responses receive `reasoning.effort`; numeric budgets are mapped to CPA's named effort thresholds.
-- Adaptive Claude models accept `(auto)`, `(none)`, and the CPA-compatible `(low)`, `(medium)`, `(high)`, `(xhigh)`, and `(max)` levels. Named levels become `thinking.type=adaptive` plus `output_config.effort`; `(auto)` omits only the effort value so Mirasim can choose its default.
-- Manual-thinking Claude models receive `thinking.type=enabled` plus `budget_tokens`; the plugin enforces the Anthropic minimum and the `budget_tokens < max_tokens` constraint.
-
-The protocol boundary is recorded in [ADR 0010](docs/decisions/0010-apply-thinking-at-the-mirasim-wire-boundary.md), with current Claude effort behavior in [ADR 0015](docs/decisions/0015-forward-claude-adaptive-effort.md).
-
-## Authentication envelope
-
-Mirasim 0.0.272 uses two related authentication flows:
-
-| Request | Bearer credential | Mirasim headers |
-|---|---|---|
-| `POST /v1/device/session` | Access token | Plain `mrs-sig-v2` signature headers |
-| Normal relay request | Device ticket | `x-mirasim-client` plus sealed `x-mirasim-enc` |
-
-Normal requests include generated session, agent, and call metadata in the v2 signature before encryption. Incoming client-supplied `x-mirasim-*` headers are discarded. The signature uses the pathname only; query parameters are forwarded but are not part of the signature or seal associated data.
-
-The bundled relay X25519 public key was reverified against Mirasim 0.0.272. `MIRASIM_SEAL_PUBKEY` can override that public key at process level when the relay rotates it; the value must be standard base64 encoding of exactly 32 bytes. Invalid keys fail closed rather than exposing metadata.
+A native [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin for Mirasim, with browser/CLI OAuth, automatic token refresh, dynamic models, streaming, tool calls, and quota reporting. Claude models use Messages; GPT models use Responses. CPA stores credentials in its configured `auth-dir`.
 
 ## Requirements
 
 - CLIProxyAPI `v7.2.146` or a compatible plugin ABI/schema release.
-- Go 1.26 or later.
-- A C compiler supported by Go's `c-shared` build mode.
-- A persistent, private, writable CLIProxyAPI `auth-dir`.
-
-Mirasim credentials are obtained only through this plugin's OAuth flow. The plugin does not read a `mira2api` credential directory, DPAPI/AES-encrypted Mirasim state, or `%USERPROFILE%\.mirasim`.
+- For source builds: Go 1.26+ and a C compiler supporting `c-shared`.
+- A private, persistent, writable CPA `auth-dir`.
 
 ## Build
 
@@ -94,42 +18,17 @@ go vet ./...
 go build -trimpath -buildmode=c-shared -o dist/mirasim.so ./cmd/mirasim
 ```
 
-Windows PowerShell (with a compatible GCC toolchain on `PATH`):
+Windows PowerShell, with GCC on `PATH`:
 
 ```powershell
-go test ./...
-go vet ./...
-go build -trimpath -buildmode=c-shared -o dist/mirasim.dll ./cmd/mirasim
+.\scripts\build.ps1 -Version 0.7.1
 ```
 
-The generated `.h` file is not needed by CLIProxyAPI.
+The Windows script runs tests and vet before producing `dist/mirasim.dll`. Generated `.h` files are not needed by CPA.
 
-### GitHub Releases
+## Install
 
-The [GitHub Actions workflow](.github/workflows/build.yml) follows the release flow used by [cpa-plugin-gemini-cli](https://github.com/router-for-me/cpa-plugin-gemini-cli/blob/main/.github/workflows/build.yml). Push a dotted numeric tag (for example, `v0.7.1`) to the GitHub repository to run tests and vet, build the plugin, and publish the packages to the matching GitHub Release. Tags with prerelease or build suffixes, such as `v0.7.1-rc1`, are rejected before building because the official store requires numeric release versions.
-
-- Targets: Linux, macOS, and Windows on amd64 and arm64, plus FreeBSD on amd64.
-- Assets: `mirasim_<version>_<os>_<arch>.zip` and a combined SHA-256 `checksums.txt`. Each ZIP contains only the plugin library.
-- The release job checks all seven platform archives, their exact filenames, one nonempty root-level library per ZIP, and SHA-256 sidecars before generating `checksums.txt` and uploading. Rerunning a tag workflow updates the assets of an existing release.
-- Pull requests and manual runs on branches build downloadable Actions artifacts without publishing a release. A manual run on a `v*` tag also publishes that tag's release.
-
-Publishing uses the repository's automatic `GITHUB_TOKEN` with `contents: write` permission; no personal access token is required. The repository and tag must be hosted on GitHub for this workflow to run.
-
-### CLIProxyAPI Plugins Store
-
-[registry.json](registry.json) provides a schema v1 custom store source for the planned GitHub repository, `KIDA-MNESIA/cpa-plugin-mirasim`. It uses plugin ID `mirasim` and omits the legacy `version` field so the store can resolve updates from the latest GitHub Release. This entry does not mean the plugin has already been listed in the official store.
-
-See [Plugin store publishing](docs/plugin-store.md) for custom-source installation, release validation, and generating the official-store PR draft.
-
-## Install and configure
-
-Copy the platform library into CLIProxyAPI's plugin directory. Both unversioned and versioned names are supported, for example:
-
-- `plugins/mirasim.dll`
-- `plugins/mirasim-v0.7.1.dll`
-- `plugins/linux/amd64/mirasim-v0.7.1.so`
-
-Enable dynamic plugins and configure Mirasim in CLIProxyAPI's `config.yaml`:
+Copy the platform library into CPA's `plugins` directory and configure `config.yaml`:
 
 ```yaml
 plugins:
@@ -138,160 +37,88 @@ plugins:
   configs:
     mirasim:
       enabled: true
-      relay-url: https://relay.mirasim.ai
-      admin-url: https://auth.mirasim.ai
-      client-version: 0.0.272
+      # Required for remote browser OAuth; see below.
       oauth-public-base-url: https://cpa.example.com
 ```
 
-The endpoint and client-version fields are optional and default to the values shown above. `oauth-public-base-url` is optional only when the browser can reach CPA at the loopback URL generated by the host. Set it to the externally reachable HTTPS origin for a remote or Docker deployment; a path prefix is allowed when a reverse proxy strips that prefix. Non-loopback HTTP callback origins are rejected.
-
-`MIRASIM_RELAY_URL`, `MIRASIM_ADMIN_URL`, `MIRASIM_CLIENT_VERSION`, and `MIRASIM_OAUTH_PUBLIC_BASE_URL` provide process-level defaults; explicit plugin configuration wins. Existing auth records that explicitly contain old endpoint or `client_version` values must also be updated.
+Optional settings are `relay-url` (default `https://relay.mirasim.ai`), `admin-url` (default `https://auth.mirasim.ai`), and `client-version` (default `0.0.272`). Explicit configuration overrides the corresponding `MIRASIM_RELAY_URL`, `MIRASIM_ADMIN_URL`, `MIRASIM_CLIENT_VERSION`, and `MIRASIM_OAUTH_PUBLIC_BASE_URL` environment variables.
 
 ## OAuth login
 
-### Management Center
+Use the Mirasim OAuth action in Management Center and choose GitHub or Google. For a local interactive CPA process:
 
-Open the Mirasim OAuth action in Management Center. CPA calls `/v0/management/mirasim-auth-url`, and the returned page lets you choose GitHub or Google. The browser then follows Mirasim's current flow:
+```powershell
+.\CLIProxyAPI.exe -config .\config.yaml --mirasim-login --mirasim-login-provider github
+```
 
-1. Mirasim redirects back with `state`, `access_token` (or `token`), and `refresh_token` query parameters.
-2. A one-time plugin resource callback validates the 256-bit state and keeps the tokens only in bounded process memory for at most three minutes.
-3. CPA's existing `/v0/management/get-auth-status` polling invokes the plugin, which generates an Ed25519 device key and validates the complete token/signature/ticket chain against `GET /v1/models`.
-4. After validation, the plugin returns self-contained `StorageJSON`. CPA saves it under `auth-dir` as `mirasim-<account-id>.json`, or `mirasim-<device-fingerprint>.json` when the validated token has no stable account claim.
+Use `google` for Google login. CPA's `--no-browser` flag is supported. Credentials are validated and saved by CPA; no external credential-directory import is supported.
 
-The generic CPA callback stores authorization codes only, so this plugin uses its own `/v0/resource/plugins/<plugin-id>/oauth/callback` resource for Mirasim's direct-token callback. No CLIProxyAPI core patch is required. The callback immediately redirects the browser to a token-free URL after accepting it.
-
-For a remote Docker installation, the current Mirasim service rejects an unregistered public callback with `redirect_uri 不在白名单` before provider login and accepts only loopback and `*.mirofish.ai` callbacks by default. It also omits the supplied OAuth `state` from its token callback. Consequently, an explicitly allowlisted public URI is usable only when the authentication service is also changed to echo state, or when a trusted intermediary restores the state bound to that login. The plugin deliberately does not accept an unbound state-less callback on its public fixed route.
-
-When the callback cannot be registered, build and run the loopback bridge on the same machine as the browser:
+For remote deployments, set `oauth-public-base-url` to a browser-reachable callback origin. Mirasim may reject an unregistered public callback and may omit OAuth state. In that case, run the included loopback bridge on the browser's machine:
 
 ```powershell
 go build -o .\dist\mirasim-oauth-bridge.exe .\cmd\mirasim-oauth-bridge
-.\dist\mirasim-oauth-bridge.exe `
-  --listen 127.0.0.1:18317 `
-  --upstream https://cpa.example.com
+.\dist\mirasim-oauth-bridge.exe --listen 127.0.0.1:18317 --upstream https://cpa.example.com
 ```
 
-Configure the remote plugin with `oauth-public-base-url: http://127.0.0.1:18317`, restart CPA, keep the bridge running, and start Mirasim login again from Management Center. The bridge accepts only the two Mirasim OAuth resource paths, strips caller credentials, and forwards the request to CPA over HTTPS. Because Mirasim 0.0.272 does not echo `state` in its token callback, the bridge retains only the most recently observed valid state for the same three-minute login window and restores it before forwarding the callback. It never stores credentials or logs callback requests. It is needed only during login; CPA still stores the resulting auth JSON in its configured `auth-dir`. See [ADR 0019](docs/decisions/0019-bridge-remote-oauth-through-loopback.md) and [ADR 0020](docs/decisions/0020-bind-state-less-oauth-callbacks.md).
+Set the remote plugin's `oauth-public-base-url` to `http://127.0.0.1:18317`, restart CPA, and repeat login with the bridge running. The bridge forwards only OAuth resource requests and restores the pending login state; it is needed only during login. Its optional `--dial-address <IP:port>` pins the upstream connection while retaining HTTPS hostname verification and bypassing environment proxies.
 
-If local DNS returns a transparent-proxy FakeIP that Go cannot reach, pin only the upstream socket destination while leaving the HTTPS URL unchanged:
+## Quota and client validation
 
-```powershell
-.\dist\mirasim-oauth-bridge.exe `
-  --listen 127.0.0.1:18317 `
-  --upstream https://cpa.example.com `
-  --dial-address 203.0.113.10:443
-```
-
-`--dial-address` accepts only a literal IP and port. It deliberately bypasses environment proxies, but TLS SNI and certificate verification still use the hostname from `--upstream`; it does not enable insecure TLS. Update the pinned address if the CPA endpoint moves. See [ADR 0021](docs/decisions/0021-pin-oauth-bridge-upstream-address.md).
-
-If the CPA container cannot connect to `auth.mirasim.ai`, configure CPA's top-level `proxy-url`. The plugin remembers that host proxy for private `/auth/me` and `/auth/refresh` calls while keeping bearer credentials outside CPA's request-recording bridge.
-
-### Command line
-
-For a local interactive CPA process:
-
-```powershell
-.\CLIProxyAPI.exe -config .\config.yaml --mirasim-login `
-  --mirasim-login-provider github
-```
-
-`google` is also accepted. The plugin starts a random loopback callback, opens the browser unless the host's `--no-browser` flag is set, and offers a pasted-callback fallback after 15 seconds. Prefer Management Center for detached Docker containers.
-
-OAuth produces the following auth shape. Secret values are abbreviated below:
-
-```json
-{
-  "storage_version": 1,
-  "type": "mirasim",
-  "access_token": "<access-token>",
-  "refresh_token": "<refresh-token>",
-  "expired": "2026-09-03T13:00:00Z",
-  "last_refresh": "2026-09-03T12:00:00Z",
-  "account_id": "<validated-account-id-if-present>",
-  "email": "<validated-email-if-present>",
-  "plan": "<current-plan-if-present>",
-  "plan_exp": 1789500000,
-  "profile_checked_at": "2026-09-03T12:00:00Z",
-  "device_private_key": "<Ed25519-PKCS8-PEM>",
-  "relay_url": "https://relay.mirasim.ai",
-  "admin_url": "https://auth.mirasim.ai",
-  "client_version": "0.0.272",
-  "auth_kind": "oauth"
-}
-```
-
-The three profile fields are optional. JWT claims seed them at login, and a successful `/auth/me` check updates them through CPA's normal auth refresh and atomic save path. Profile lookup is best-effort and does not invalidate an otherwise working login.
-
-There is no directory-path fallback or import path. After upgrading from a path-only release, delete the obsolete Mirasim auth entry and complete OAuth login again.
-
-Multiple Mirasim accounts can coexist in the same CPA `auth-dir`. Repeating OAuth for an account with the same stable claim replaces that account's file; accounts without a stable claim use their generated device identity and therefore receive separate files.
-
-An unversioned self-contained Mirasim OAuth JSON is accepted and normalized to `storage_version: 1` in runtime. CPA writes the normalized form on the next scheduled or 401-triggered refresh. A higher or malformed version is rejected rather than guessed. This migration does not restore the removed directory/import workflow; see [ADR 0011](docs/decisions/0011-version-oauth-storage-and-publish-model-capabilities.md).
-
-## Quota signals
-
-Mirasim 0.0.272 exposes structured quota data through signed `GET /v1/limits`. The plugin returns every valid window with its name, raw `budget` and `used` units, used and remaining percentages, reset time, model scope, and status. It also preserves the top-level `paid` and `degraded` signals.
-
-If `/v1/limits` returns the compatibility statuses 405 or 420, the plugin performs the same signed one-token Messages probe as the official client and reads these legacy response headers:
-
-- `anthropic-ratelimit-unified-5h-utilization`
-- `anthropic-ratelimit-unified-5h-reset`
-- `anthropic-ratelimit-unified-7d-utilization`
-- `anthropic-ratelimit-unified-7d-reset`
-
-With CLIProxyAPI's Management API enabled, call:
+With CPA Management API authentication, query:
 
 ```text
-GET /v0/management/mirasim/quota
 GET /v0/management/mirasim/quota?auth_index=<runtime-auth-index>
 ```
 
-The first form works when exactly one Mirasim auth is loaded. A fresh response without valid structured windows or fallback headers has `available: false`; stale data is not reused. The endpoint uses CLIProxyAPI's normal Management API authentication and returns `Cache-Control: no-store`.
+The `auth_index` parameter can be omitted when exactly one Mirasim account is loaded. Quotas come from structured limits, with a legacy header fallback. For quota cards in Management Center, build the companion panel with `.\scripts\build-management-center.ps1`; see [panel setup](management-center/README.md) for deployment. The plugin ZIP does not include this panel or the OAuth bridge.
 
-### Management Center quota page
+Validate inference with an actual Claude Code or Codex client and correlate the result with CPA logs. A minimal hand-written Messages request can fail even when the real client works. The one-token quota fallback is not an inference health check. Model catalog presence does not guarantee upstream capacity.
 
-The stock Management Center has a compile-time quota-provider registry, so a native plugin route alone cannot inject a card into `management.html#/quota`. Build the companion panel:
+## GitHub Releases
+
+The [workflow](.github/workflows/build.yml), based on [cpa-plugin-gemini-cli](https://github.com/router-for-me/cpa-plugin-gemini-cli), runs tests and vet, then builds Linux/macOS/Windows on amd64 and arm64, plus FreeBSD on amd64.
+
+Push a dotted numeric tag such as `v0.7.1` to GitHub to publish a release. Prerelease/build suffixes are rejected. Release assets are `mirasim_<version>_<os>_<arch>.zip` and `checksums.txt`; each ZIP contains one root-level `mirasim.so`, `mirasim.dylib`, or `mirasim.dll`. All seven archives and their SHA-256 hashes are checked before uploading.
+
+Pull requests and manual branch runs produce Actions artifacts only. Tag runs publish or update the corresponding release using the automatic `GITHUB_TOKEN`; no personal access token is required. Keep the workflow matrix and `PLATFORMS` in `scripts/plugin_store.py` aligned when changing targets.
+
+## Plugin store
+
+[registry.json](registry.json) targets the planned repository `KIDA-MNESIA/cpa-plugin-mirasim`, with author `KIDA-MNESIA` and plugin ID `mirasim`. It omits a fixed version so CPA resolves updates from the latest release. This does not mean the plugin is already officially listed.
+
+After publishing the repository and a successful release, test installation using this additional CPA store source:
+
+```yaml
+plugins:
+  enabled: true
+  dir: plugins
+  store-sources:
+    - https://raw.githubusercontent.com/KIDA-MNESIA/cpa-plugin-mirasim/main/registry.json
+```
+
+Confirm GitHub's **Latest** release is the intended published version, verify its assets, then install, enable, and test OAuth and a real client request. Packaging checks do not prove ABI or runtime compatibility.
+
+Generate submission files with Python 3.11+, using the actual published tag:
 
 ```powershell
-.\scripts\build-management-center.ps1
+python scripts/plugin_store.py prepare-submission --repository https://github.com/KIDA-MNESIA/cpa-plugin-mirasim --author KIDA-MNESIA --tag v0.7.1
 ```
 
-This produces `dist/management.html` from a pinned upstream Management Center revision. The patched panel recognizes Mirasim auth records, adds a Mirasim tab/card, calls the plugin quota route with the runtime `auth_index`, and displays all returned limit windows, raw-unit details, remaining capacity, reset times, model scope, plan type, and degraded status. It keeps Mirasim separate from native Claude OAuth credentials.
+This writes `dist/store/registry.json` and `dist/store/store-pr.md`. Verify the draft's links and record actual test results. Fork [CLIProxyAPI-Plugins-Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store), check for a duplicate ID, and append `plugins[0]` to its registry without replacing existing entries. Submit that registry change and the verified PR description. Later updates normally need only a new latest release. If the repository or author changes, regenerate and update the root registry.
 
-For Docker Compose, persist the custom panel with a read-only bind mount alongside the plugin mount:
+Local release checks:
 
-```yaml
-services:
-  cpa:
-    volumes:
-      - ./plugins:/CLIProxyAPI/plugins
-      - ./management.html:/CLIProxyAPI/static/management.html:ro
+```powershell
+python -m unittest discover -s scripts -p test_plugin_store.py -v
+python scripts/plugin_store.py verify-release --tag v0.7.1 --directory dist/release
 ```
 
-Also disable CLIProxyAPI's upstream Management Center auto-updater so it does not try to replace the pinned custom panel:
+Place all seven ZIPs and their `.zip.sha256` sidecars in `dist/release` for the last command; it generates `checksums.txt`.
 
-```yaml
-remote-management:
-  disable-auto-update-panel: true
-```
+## Security and license
 
-The frontend integration and its upgrade boundary are documented in [ADR 0014](docs/decisions/0014-adopt-structured-mirasim-limits.md).
+Native plugins run inside CPA. Protect `auth-dir`: it contains bearer tokens and private keys. Redact OAuth callback query strings in reverse-proxy logs.
 
-## Security boundary
-
-- Native plugins are trusted in-process code.
-- The CPA auth file is now the source of truth and contains bearer tokens plus the Ed25519 private key. Persist and back up `auth-dir`, restrict access to the CPA service account, and never commit, upload, or attach these files to an issue.
-- Relay requests use CLIProxyAPI's host HTTP client so host transport and request lifecycle policies remain active.
-- Account-profile lookup and token refresh use private timeout-bounded HTTP clients because their bearer headers or refresh-token JSON body must not enter the host request logger. They honor CPA's configured upstream proxy (or standard proxy environment variables when none is configured) without persisting the proxy URL in Mirasim auth JSON.
-- Mirasim's OAuth service returns bearer tokens in callback query parameters. CLIProxyAPI masks token-named query values in its own logs; any reverse proxy in front of CPA must also redact or omit callback query strings.
-- Incoming `Authorization`, `Proxy-Authorization`, and `X-Api-Key` values are removed before Mirasim authentication headers are injected.
-- Incoming `x-mirasim-*` values are removed, and ordinary relay metadata is sent only inside `x-mirasim-enc`.
-
-The provider boundaries are recorded in [ADR 0001](docs/decisions/0001-mirasim-provider-boundaries.md), the v2 authentication design in [ADR 0003](docs/decisions/0003-adopt-mirasim-v2-authentication-envelope.md), the quota-page integration in [ADR 0004](docs/decisions/0004-integrate-quota-with-management-center.md), the OAuth design in [ADR 0005](docs/decisions/0005-implement-mirasim-oauth-login.md), the CPA-managed refresh lifecycle in [ADR 0007](docs/decisions/0007-delegate-token-refresh-to-cpa.md), current model routing and metadata in [ADR 0013](docs/decisions/0013-route-published-models-by-family.md) through [ADR 0017](docs/decisions/0017-align-relay-headers-and-codex-routes.md), and ticket/plan behavior in [ADR 0018](docs/decisions/0018-back-off-tickets-and-track-account-plans.md).
-
-## License
-
-This project is licensed under the [MIT License](LICENSE).
+Licensed under the [MIT License](LICENSE).
 
 开源技术和开发者交流，欢迎访问 [Linux DO](https://linux.do/)。
