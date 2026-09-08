@@ -21,6 +21,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Validate store release tag
+        if: github.ref_type == 'tag'
+        run: python3 scripts/plugin_store.py validate-tag --tag "$GITHUB_REF_NAME"
+
+      - name: Test release tooling
+        run: python3 -m unittest discover -s scripts -p 'test_plugin_store.py' -v
+
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
@@ -254,11 +261,18 @@ jobs:
       - build-freebsd
     runs-on: ubuntu-24.04
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: mirasim_*.zip
           path: dist
           merge-multiple: true
+
+      - name: Validate plugin store assets
+        run: python3 scripts/plugin_store.py verify-release --tag "$GITHUB_REF_NAME" --directory dist
 
       - name: Publish GitHub release
         env:
@@ -266,7 +280,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          sort dist/*.sha256 > dist/checksums.txt
           (cd dist && sha256sum --check checksums.txt)
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" dist/*.zip dist/checksums.txt --clobber --repo "${GITHUB_REPOSITORY}"

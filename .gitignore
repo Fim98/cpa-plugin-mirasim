@@ -7,3 +7,4 @@
 *.sha256
 checksums.txt
 coverage.out
+__pycache__/

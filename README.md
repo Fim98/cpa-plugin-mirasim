@@ -106,14 +106,20 @@ The generated `.h` file is not needed by CLIProxyAPI.
 
 ### GitHub Releases
 
-The [GitHub Actions workflow](.github/workflows/build.yml) follows the release flow used by [cpa-plugin-gemini-cli](https://github.com/router-for-me/cpa-plugin-gemini-cli/blob/main/.github/workflows/build.yml). Push a `v*` tag (for example, `v0.7.1`) to the GitHub repository to run tests and vet, build the plugin, and publish the packages to the matching GitHub Release.
+The [GitHub Actions workflow](.github/workflows/build.yml) follows the release flow used by [cpa-plugin-gemini-cli](https://github.com/router-for-me/cpa-plugin-gemini-cli/blob/main/.github/workflows/build.yml). Push a dotted numeric tag (for example, `v0.7.1`) to the GitHub repository to run tests and vet, build the plugin, and publish the packages to the matching GitHub Release. Tags with prerelease or build suffixes, such as `v0.7.1-rc1`, are rejected before building because the official store requires numeric release versions.
 
 - Targets: Linux, macOS, and Windows on amd64 and arm64, plus FreeBSD on amd64.
 - Assets: `mirasim_<version>_<os>_<arch>.zip` and a combined SHA-256 `checksums.txt`. Each ZIP contains only the plugin library.
-- The release job verifies the archive checksums before uploading. Rerunning a tag workflow updates the assets of an existing release.
+- The release job checks all seven platform archives, their exact filenames, one nonempty root-level library per ZIP, and SHA-256 sidecars before generating `checksums.txt` and uploading. Rerunning a tag workflow updates the assets of an existing release.
 - Pull requests and manual runs on branches build downloadable Actions artifacts without publishing a release. A manual run on a `v*` tag also publishes that tag's release.
 
 Publishing uses the repository's automatic `GITHUB_TOKEN` with `contents: write` permission; no personal access token is required. The repository and tag must be hosted on GitHub for this workflow to run.
+
+### CLIProxyAPI Plugins Store
+
+[registry.json](registry.json) provides a schema v1 custom store source for the planned GitHub repository, `KIDA-MNESIA/cpa-plugin-mirasim`. It uses plugin ID `mirasim` and omits the legacy `version` field so the store can resolve updates from the latest GitHub Release. This entry does not mean the plugin has already been listed in the official store.
+
+See [Plugin store publishing](docs/plugin-store.md) for custom-source installation, release validation, and generating the official-store PR draft.
 
 ## Install and configure
 
