@@ -62,6 +62,10 @@ go build -o .\dist\mirasim-oauth-bridge.exe .\cmd\mirasim-oauth-bridge
 
 Set the remote plugin's `oauth-public-base-url` to `http://127.0.0.1:18317`, restart CPA, and repeat login with the bridge running. The bridge forwards only OAuth resource requests and restores the pending login state; it is needed only during login. Its optional `--dial-address <IP:port>` pins the upstream connection while retaining HTTPS hostname verification and bypassing environment proxies.
 
+## Codex compaction
+
+CPA Responses compact requests use `/v1/responses/compact`, including the `/backend-api/codex/responses/compact` alias. This path accepts non-streaming Responses input/output and preserves opaque compaction items. Ordinary Responses completions retain their SSE handling.
+
 ## Quota and client validation
 
 With CPA Management API authentication, query:

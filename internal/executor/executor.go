@@ -38,6 +38,9 @@ func New(settings pluginconfig.Settings, pool *mirasim.Pool) *Executor {
 func (e *Executor) Identifier() string { return credentials.Provider }
 
 func (e *Executor) Execute(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
+	if req.Alt == "responses/compact" {
+		return e.executeCompact(ctx, req)
+	}
 	_, client, errClient := e.client(req.StorageJSON)
 	if errClient != nil {
 		return pluginapi.ExecutorResponse{}, errClient
@@ -71,6 +74,9 @@ func (e *Executor) Execute(ctx context.Context, req pluginapi.ExecutorRequest) (
 }
 
 func (e *Executor) ExecuteStream(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+	if req.Alt == "responses/compact" {
+		return pluginapi.ExecutorStreamResponse{}, compactError("streaming is not supported for /responses/compact")
+	}
 	_, client, errClient := e.client(req.StorageJSON)
 	if errClient != nil {
 		return pluginapi.ExecutorStreamResponse{}, errClient
@@ -165,7 +171,15 @@ func (e *Executor) HttpRequest(ctx context.Context, req pluginapi.ExecutorHTTPRe
 			return pluginapi.ExecutorHTTPResponse{}, errParse
 		}
 	}
-	resp, errDo := client.Do(ctx, req.HTTPClient, method, relayPath, parsed.Query(), req.Headers, body)
+	headers := cloneHeaders(req.Headers)
+	if relayPath == compactPath {
+		body, errParse = compactBody(body, modelFromJSON(body))
+		if errParse != nil {
+			return pluginapi.ExecutorHTTPResponse{}, errParse
+		}
+		headers.Set("Accept", "application/json")
+	}
+	resp, errDo := client.Do(ctx, req.HTTPClient, method, relayPath, parsed.Query(), headers, body)
 	if errDo != nil {
 		return pluginapi.ExecutorHTTPResponse{}, errDo
 	}
@@ -176,6 +190,8 @@ func normalizeRelayPath(requestPath string) string {
 	switch requestPath {
 	case "/backend-api/codex/responses", "/v1/responses":
 		return "/v1/responses"
+	case "/backend-api/codex/responses/compact", "/v1/responses/compact":
+		return "/v1/responses/compact"
 	case "/backend-api/codex/alpha/search", "/v1/alpha/search":
 		return "/v1/alpha/search"
 	default:
