@@ -50,8 +50,15 @@ func TestABIRegisterAndManagementRoute(t *testing.T) {
 	if errDecode := json.Unmarshal(envelope.Result, &modelResponse); errDecode != nil {
 		t.Fatalf("decode static models: %v", errDecode)
 	}
-	if len(modelResponse.Models) != 10 {
+	if len(modelResponse.Models) != 17 {
 		t.Fatalf("static models = %#v", modelResponse.Models)
+	}
+	seen := map[string]bool{}
+	for _, model := range modelResponse.Models {
+		seen[model.ID] = true
+	}
+	if !seen["gpt-6-astra"] || !seen["claude-sonnet-5[1m]"] {
+		t.Fatal("new models/selectors missing from native ABI")
 	}
 	for _, model := range modelResponse.Models {
 		id := strings.ToLower(model.ID)
