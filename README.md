@@ -76,6 +76,8 @@ Model membership comes from the account's `/v1/models`. Signed `/v1/model-roster
 
 Claude models with a known context of at least one million tokens also publish `[1m]` selector aliases. For example, `claude-sonnet-5[1m](high)` strips both selectors before forwarding the real model ID, retains high effort, and adds `context-1m-2025-08-07` without losing other beta tokens.
 
+The official client's `ultra` means `max` plus client workflow orchestration. CPA's single-request executor cannot run that workflow. Explicit `ultra` requests return HTTP 400 with an actionable message instead of silently running at another effort; use `max` for a single API request.
+
 ## Codex compaction
 
 CPA Responses compact requests use `/v1/responses/compact`, including the `/backend-api/codex/responses/compact` alias. This path accepts non-streaming Responses input/output and preserves opaque compaction items. Ordinary Responses completions retain their SSE handling.

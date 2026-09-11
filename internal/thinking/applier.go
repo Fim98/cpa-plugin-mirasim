@@ -78,7 +78,7 @@ func ParseModel(model string) ParsedModel {
 	case "auto", "-1":
 		parsed.Config = pluginapi.ThinkingConfig{Mode: "auto", Budget: -1}
 		parsed.HasConfig = true
-	case "minimal", "low", "medium", "high", "xhigh", "max":
+	case "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
 		parsed.Config = pluginapi.ThinkingConfig{Mode: "level", Level: raw}
 		parsed.HasConfig = true
 	default:
@@ -108,6 +108,12 @@ func parseContextSelector(parsed ParsedModel) ParsedModel {
 func ApplyForWire(body []byte, model, wire string, config pluginapi.ThinkingConfig) ([]byte, error) {
 	body = validBody(body)
 	config = normalizeConfig(config)
+	if config.Level == "ultra" {
+		return nil, workflowError()
+	}
+	if err := ValidateWorkflowRequest(body, model); err != nil {
+		return nil, err
+	}
 	switch strings.ToLower(strings.TrimSpace(wire)) {
 	case wireClaude:
 		return applyClaude(body, model, config)
@@ -116,6 +122,22 @@ func ApplyForWire(body []byte, model, wire string, config pluginapi.ThinkingConf
 	default:
 		return append([]byte(nil), body...), nil
 	}
+}
+
+func workflowError() error {
+	return &ConfigError{Code: "mirasim_client_workflow_required", Message: "Mirasim ultra requires the official client's workflow orchestration; use max for a single API request"}
+}
+
+func ValidateWorkflowRequest(body []byte, model string) error {
+	if ParseModel(model).Config.Level == "ultra" {
+		return workflowError()
+	}
+	for _, path := range []string{"reasoning.effort", "reasoning_effort", "output_config.effort"} {
+		if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, path).String()), "ultra") {
+			return workflowError()
+		}
+	}
+	return nil
 }
 
 func normalizeConfig(config pluginapi.ThinkingConfig) pluginapi.ThinkingConfig {

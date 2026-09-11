@@ -9,6 +9,25 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestUltraCannotSilentlyBecomeOrdinaryCompletion(t *testing.T) {
+	for _, model := range []string{"gpt-6-astra(ultra)", "claude-sonnet-5(ultra)"} {
+		parsed := ParseModel(model)
+		_, err := ApplyForWire([]byte("{}"), parsed.ModelName, "codex", parsed.Config)
+		var e *ConfigError
+		if !errors.As(err, &e) || e.Code != "mirasim_client_workflow_required" {
+			t.Fatalf("%s: %v", model, err)
+		}
+	}
+	for _, body := range []string{`{"reasoning":{"effort":"ultra"}}`, `{"output_config":{"effort":"ultra"}}`, `{"reasoning_effort":"ultra"}`} {
+		if ValidateWorkflowRequest([]byte(body), "gpt-6-astra") == nil {
+			t.Fatal("workflow request accepted")
+		}
+	}
+	if ValidateWorkflowRequest([]byte(`{"reasoning":{"effort":"max"}}`), "gpt-6-astra") != nil {
+		t.Fatal("max rejected")
+	}
+}
+
 func TestParseModelUsesCPASuffixConvention(t *testing.T) {
 	tests := []struct {
 		input     string

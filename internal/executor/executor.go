@@ -223,6 +223,9 @@ type providerRoute struct {
 }
 
 func buildProviderRequest(req pluginapi.ExecutorRequest, stream bool) ([]byte, providerRoute, error) {
+	if err := thinkingpkg.ValidateWorkflowRequest(req.Payload, req.Model); err != nil {
+		return nil, providerRoute{}, err
+	}
 	parsedModel := thinkingpkg.ParseModel(req.Model)
 	model := parsedModel.ModelName
 	source := sourceFormat(req)
@@ -479,6 +482,9 @@ func upstreamHeaders(source http.Header, wire sdktranslator.Format) http.Header 
 }
 
 func normalizeHTTPRequestBody(body []byte, model string, wire sdktranslator.Format) ([]byte, error) {
+	if err := thinkingpkg.ValidateWorkflowRequest(body, model); err != nil {
+		return nil, err
+	}
 	var payload map[string]any
 	if errDecode := json.Unmarshal(body, &payload); errDecode != nil {
 		return nil, fmt.Errorf("decode Mirasim HTTP request: %w", errDecode)
