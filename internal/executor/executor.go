@@ -38,6 +38,7 @@ func New(settings pluginconfig.Settings, pool *mirasim.Pool) *Executor {
 func (e *Executor) Identifier() string { return credentials.Provider }
 
 func (e *Executor) Execute(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
+	ctx = mirasim.WithRequestIdentity(ctx, req.Metadata)
 	if req.Alt == "responses/compact" {
 		return e.executeCompact(ctx, req)
 	}
@@ -74,6 +75,7 @@ func (e *Executor) Execute(ctx context.Context, req pluginapi.ExecutorRequest) (
 }
 
 func (e *Executor) ExecuteStream(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
+	ctx = mirasim.WithRequestIdentity(ctx, req.Metadata)
 	if req.Alt == "responses/compact" {
 		return pluginapi.ExecutorStreamResponse{}, compactError("streaming is not supported for /responses/compact")
 	}
@@ -103,6 +105,7 @@ func (e *Executor) ExecuteStream(ctx context.Context, req pluginapi.ExecutorRequ
 }
 
 func (e *Executor) CountTokens(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
+	ctx = mirasim.WithRequestIdentity(ctx, req.Metadata)
 	_, client, errClient := e.client(req.StorageJSON)
 	if errClient != nil {
 		return pluginapi.ExecutorResponse{}, errClient

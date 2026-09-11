@@ -802,7 +802,7 @@ func assertSealedRelayRequest(t *testing.T, publicKey ed25519.PublicKey, relayPr
 		t.Fatal("relay request is missing x-mirasim-enc")
 	}
 	metadata := decryptRelayMetadata(t, relayPrivate, req.Method, mustRequestPath(t, req.URL), sealed)
-	for _, name := range []string{headerMirasimSession, headerMirasimAgent, headerMirasimCall, headerMirasimDevice, headerMirasimTimestamp, headerMirasimNonce, headerMirasimSignature} {
+	for _, name := range []string{headerMirasimSession, headerMirasimAgent, headerMirasimDevice, headerMirasimTimestamp, headerMirasimNonce, headerMirasimSignature} {
 		if metadata[name] == "" {
 			t.Errorf("sealed metadata is missing %s: %#v", name, metadata)
 		}

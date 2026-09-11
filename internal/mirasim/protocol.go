@@ -1,6 +1,7 @@
 package mirasim
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/hkdf"
 	"crypto/rand"
@@ -169,7 +170,7 @@ func (c *Client) signatureHeadersLocked(method, requestPath, credential string, 
 	return headers, nil
 }
 
-func (c *Client) relayMetadataLocked(requestPath string) (map[string]string, error) {
+func (c *Client) relayMetadataLocked(ctx context.Context, requestPath string) (map[string]string, error) {
 	if c.sessionID == "" {
 		sessionID, errSession := randomUUID(rand.Reader)
 		if errSession != nil {
@@ -177,15 +178,28 @@ func (c *Client) relayMetadataLocked(requestPath string) (map[string]string, err
 		}
 		c.sessionID = "mirasim_" + sessionID
 	}
-	callID, errCall := randomUUID(rand.Reader)
-	if errCall != nil {
-		return nil, fmt.Errorf("generate Mirasim call ID: %w", errCall)
-	}
-	return map[string]string{
+	metadata := map[string]string{
 		headerMirasimSession: c.sessionID,
 		headerMirasimAgent:   relayAgent(requestPath),
-		headerMirasimCall:    callID,
-	}, nil
+	}
+	if identity, ok := ctx.Value(requestIdentityKey{}).(requestIdentity); ok {
+		if identity.session != "" {
+			metadata[headerMirasimSession] = "mirasim_" + sha256Hex([]byte(c.storage.AccountID + "\x00" + identity.session))[:32]
+		}
+		if identity.turn != "" {
+			metadata["x-mirasim-turn"] = identity.turn
+		}
+	}
+	if value := safeMetadata(c.storage.AccountID); value != "" {
+		metadata["x-mirasim-account"] = value
+	}
+	if value := safeMetadata(c.options.Locale); value != "" {
+		metadata["x-mirasim-locale"] = value
+	}
+	if c.options.Collect != nil && !*c.options.Collect {
+		metadata["x-mirasim-collect"] = "off"
+	}
+	return metadata, nil
 }
 
 func relayAgent(requestPath string) string {

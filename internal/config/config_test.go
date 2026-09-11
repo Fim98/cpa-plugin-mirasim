@@ -4,6 +4,19 @@ import (
 	"testing"
 )
 
+func TestExplicitCollectionOverridesEnvironment(t *testing.T) {
+	t.Setenv("MIRASIM_COLLECT", "true")
+	t.Setenv("MIRASIM_LOCALE", "en-US")
+	cfg := Parse([]byte("collect: false\nlocale: zh-CN\n"))
+	if cfg.Collect == nil || *cfg.Collect || cfg.Locale != "zh-CN" {
+		t.Fatalf("config=%+v", cfg)
+	}
+	t.Setenv("MIRASIM_COLLECT", "")
+	if Defaults().Collect != nil {
+		t.Fatal("omitted collection should follow relay default")
+	}
+}
+
 func TestParseMirasimConfig(t *testing.T) {
 	t.Setenv("MIRASIM_RELAY_URL", "https://env-relay.example/")
 	t.Setenv("MIRASIM_ADMIN_URL", "https://env-admin.example/")

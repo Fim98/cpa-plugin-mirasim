@@ -52,12 +52,21 @@ var quotaHeaderNames = []string{
 }
 
 type Pool struct {
+	options RelayOptions
 	mu      sync.Mutex
 	clients map[string]*Client
 }
 
-func NewPool() *Pool {
-	return &Pool{clients: make(map[string]*Client)}
+func NewPool(options ...RelayOptions) *Pool {
+	p := &Pool{clients: make(map[string]*Client)}
+	if len(options) > 0 {
+		p.options = options[0]
+		if p.options.Collect != nil {
+			v := *p.options.Collect
+			p.options.Collect = &v
+		}
+	}
+	return p
 }
 
 func (p *Pool) Client(storage credentials.Storage) *Client {
@@ -71,6 +80,7 @@ func (p *Pool) Client(storage credentials.Storage) *Client {
 		return client
 	}
 	client := NewClient(storage)
+	client.options = p.options
 	p.clients[key] = client
 	return client
 }
@@ -86,6 +96,7 @@ func (p *Pool) Forget(storage credentials.Storage) {
 }
 
 type Client struct {
+	options         RelayOptions
 	rosterMu        sync.Mutex
 	roster          ModelRoster
 	rosterNextCheck time.Time
@@ -417,7 +428,7 @@ func (c *Client) authHeaders(ctx context.Context, client pluginapi.HostHTTPClien
 	if errTicket != nil {
 		return nil, errTicket
 	}
-	metadata, errMetadata := c.relayMetadataLocked(requestPath)
+	metadata, errMetadata := c.relayMetadataLocked(ctx, requestPath)
 	if errMetadata != nil {
 		return nil, errMetadata
 	}

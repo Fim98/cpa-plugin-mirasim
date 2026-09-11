@@ -24,7 +24,7 @@ type MirasimPlugin struct {
 
 func Build(configYAML []byte) pluginapi.Plugin {
 	settings := pluginconfig.Parse(configYAML)
-	pool := mirasim.NewPool()
+	pool := mirasim.NewPool(mirasim.RelayOptions{Collect: settings.Collect, Locale: settings.Locale})
 	authProvider := auth.New(settings, pool)
 	p := &MirasimPlugin{
 		auth:       authProvider,
@@ -40,6 +40,8 @@ func Build(configYAML []byte) pluginapi.Plugin {
 			Author:           "router-for-me",
 			GitHubRepository: "https://github.com/router-for-me/cpa-plugin-mirasim",
 			ConfigFields: []pluginapi.ConfigField{
+				{Name: "collect", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Set false to request Mirasim relay collection off."},
+				{Name: "locale", Type: pluginapi.ConfigFieldTypeString, Description: "Optional locale sent in encrypted Mirasim metadata."},
 				{Name: "relay-url", Type: pluginapi.ConfigFieldTypeString, Description: "Mirasim relay base URL."},
 				{Name: "admin-url", Type: pluginapi.ConfigFieldTypeString, Description: "Mirasim authentication service base URL."},
 				{Name: "client-version", Type: pluginapi.ConfigFieldTypeString, Description: "Value sent in x-mirasim-client."},

@@ -16,6 +16,8 @@ const (
 // Settings contains public provider and OAuth callback defaults. Credential
 // material is supplied only by OAuth and persisted by CLIProxyAPI in auth-dir.
 type Settings struct {
+	Collect       *bool  `yaml:"collect"`
+	Locale        string `yaml:"locale"`
 	RelayURL      string `yaml:"relay-url"`
 	AdminURL      string `yaml:"admin-url"`
 	ClientVersion string `yaml:"client-version"`
@@ -51,6 +53,13 @@ func Parse(raw []byte) Settings {
 }
 
 func merge(settings, configured Settings) Settings {
+	if configured.Collect != nil {
+		value := *configured.Collect
+		settings.Collect = &value
+	}
+	if value := strings.TrimSpace(configured.Locale); value != "" {
+		settings.Locale = value
+	}
 	if value := cleanURL(configured.RelayURL); value != "" {
 		settings.RelayURL = value
 	}
@@ -69,11 +78,25 @@ func merge(settings, configured Settings) Settings {
 // Defaults resolves environment overrides and safe provider defaults.
 func Defaults() Settings {
 	return Settings{
+		Collect:            optionalBool(os.Getenv("MIRASIM_COLLECT")),
+		Locale:             strings.TrimSpace(os.Getenv("MIRASIM_LOCALE")),
 		RelayURL:           firstNonEmpty(cleanURL(os.Getenv("MIRASIM_RELAY_URL")), DefaultRelayURL),
 		AdminURL:           firstNonEmpty(cleanURL(os.Getenv("MIRASIM_ADMIN_URL")), DefaultAdminURL),
 		ClientVersion:      firstNonEmpty(strings.TrimSpace(os.Getenv("MIRASIM_CLIENT_VERSION")), DefaultClientVersion),
 		OAuthPublicBaseURL: cleanURL(os.Getenv("MIRASIM_OAUTH_PUBLIC_BASE_URL")),
 	}
+}
+
+func optionalBool(value string) *bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "false", "0", "off":
+		value := false
+		return &value
+	case "true", "1", "on":
+		value := true
+		return &value
+	}
+	return nil
 }
 
 func cleanURL(value string) string {
