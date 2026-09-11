@@ -97,7 +97,7 @@ func (p *Provider) finalizeOAuthStorage(ctx context.Context, settings pluginconf
 func (p *Provider) RegisterCommandLine(context.Context, pluginapi.CommandLineRegistrationRequest) (pluginapi.CommandLineRegistrationResponse, error) {
 	return pluginapi.CommandLineRegistrationResponse{Flags: []pluginapi.CommandLineFlag{
 		{Name: "mirasim-login", Usage: "Run Mirasim browser OAuth login.", Type: "bool", DefaultValue: "false"},
-		{Name: "mirasim-login-provider", Usage: "Mirasim OAuth account provider: github or google.", Type: "string", DefaultValue: "github"},
+		{Name: "mirasim-login-provider", Usage: "Mirasim OAuth provider ID from /auth/oauth/providers (default github).", Type: "string", DefaultValue: "github"},
 		{Name: "mirasim-relay-url", Usage: "Mirasim relay base URL.", Type: "string"},
 		{Name: "mirasim-admin-url", Usage: "Mirasim authentication service base URL.", Type: "string"},
 		{Name: "mirasim-client-version", Usage: "Value sent in x-mirasim-client.", Type: "string"},

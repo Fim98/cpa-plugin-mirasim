@@ -45,13 +45,13 @@ Optional settings are `relay-url` (default `https://relay.mirasim.ai`), `admin-u
 
 ## OAuth login
 
-Use the Mirasim OAuth action in Management Center and choose GitHub or Google. For a local interactive CPA process:
+Use the Mirasim OAuth action in Management Center and choose a provider returned by `/auth/oauth/providers`. Discovery failures show a retryable error rather than presenting stale login buttons. For a local interactive CPA process:
 
 ```powershell
 .\CLIProxyAPI.exe -config .\config.yaml --mirasim-login --mirasim-login-provider github
 ```
 
-Use `google` for Google login. CPA's `--no-browser` flag is supported. Credentials are validated and saved by CPA; no external credential-directory import is supported.
+Use `google` for Google login, or another provider ID currently offered by the service. CLI login validates the choice using the same discovery endpoint. CPA's `--no-browser` flag is supported. Credentials are validated and saved by CPA; no external credential-directory import is supported.
 
 For remote deployments, set `oauth-public-base-url` to a browser-reachable callback origin. Mirasim may reject an unregistered public callback and may omit OAuth state. In that case, run the included loopback bridge on the browser's machine:
 

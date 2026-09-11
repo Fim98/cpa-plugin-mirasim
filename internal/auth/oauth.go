@@ -28,6 +28,7 @@ const (
 )
 
 type oauthSession struct {
+	proxyURL     string
 	state        string
 	callbackURL  string
 	expiresAt    time.Time
@@ -91,7 +92,7 @@ func (p *Provider) StartLogin(_ context.Context, req pluginapi.AuthLoginStartReq
 		return pluginapi.AuthLoginStartResponse{}, fmt.Errorf("too many pending Mirasim OAuth sessions")
 	}
 	callbackURL := joinPublicURL(base, resourceBasePath+OAuthCallbackResource)
-	p.oauth.sessions[state] = &oauthSession{state: state, callbackURL: callbackURL, expiresAt: expiresAt}
+	p.oauth.sessions[state] = &oauthSession{state: state, callbackURL: callbackURL, expiresAt: expiresAt, proxyURL: req.Host.ProxyURL}
 	p.oauth.mu.Unlock()
 
 	startURL := joinPublicURL(base, resourceBasePath+OAuthStartResource)
@@ -165,10 +166,10 @@ func (p *Provider) PollLogin(ctx context.Context, req pluginapi.AuthLoginPollReq
 // HandleOAuthResource serves only the two browser-facing resources registered
 // by the management capability. Tokens are accepted from the Mirasim callback
 // into bounded process memory and are never reflected into the response.
-func (p *Provider) HandleOAuthResource(_ context.Context, req pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+func (p *Provider) HandleOAuthResource(ctx context.Context, req pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
 	switch {
 	case strings.HasSuffix(req.Path, OAuthStartResource):
-		return p.handleOAuthStart(req), nil
+		return p.handleOAuthStart(ctx, req), nil
 	case strings.HasSuffix(req.Path, OAuthCallbackResource):
 		return p.handleOAuthCallback(req), nil
 	default:
@@ -176,16 +177,23 @@ func (p *Provider) HandleOAuthResource(_ context.Context, req pluginapi.Manageme
 	}
 }
 
-func (p *Provider) handleOAuthStart(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+func (p *Provider) handleOAuthStart(ctx context.Context, req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	session, ok := p.oauth.getPending(req.Query.Get("state"))
 	if !ok {
 		return htmlResponse(http.StatusBadRequest, "Mirasim OAuth", "This login link is invalid or has expired. Start the login again from Management Center.")
 	}
+	providers, errDiscovery := discoverLoginProviders(ctx, p.settings.AdminURL, session.proxyURL)
+	if errDiscovery != nil {
+		return htmlResponse(http.StatusServiceUnavailable, "Mirasim OAuth", errDiscovery.Error())
+	}
+	if len(providers) == 0 {
+		return htmlResponse(http.StatusServiceUnavailable, "Mirasim OAuth", "No sign-in providers are currently enabled.")
+	}
 	provider := strings.ToLower(strings.TrimSpace(req.Query.Get("provider")))
 	if provider == "" {
-		return renderProviderPage(session.state)
+		return renderProviderPage(session.state, providers)
 	}
-	if provider != "github" && provider != "google" {
+	if !providerOffered(providers, provider) {
 		return htmlResponse(http.StatusBadRequest, "Mirasim OAuth", "Unsupported Mirasim sign-in provider.")
 	}
 	authURL, errURL := buildMirasimOAuthURL(p.settings.AdminURL, provider, session.callbackURL, session.state)
@@ -366,19 +374,19 @@ var providerPageTemplate = template.Must(template.New("providers").Parse(`<!doct
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sign in to Mirasim</title><style>body{font:16px system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1.25rem;color:#171717}h1{font-size:1.6rem}.button{display:block;margin:.75rem 0;padding:.85rem 1rem;border:1px solid #bbb;border-radius:.65rem;color:inherit;text-decoration:none}.button:hover{background:#f4f4f4}p{color:#555}</style></head>
 <body><h1>Sign in to Mirasim</h1><p>Choose the account provider used by your Mirasim account.</p>
-<a class="button" href="?provider=github&amp;state={{.State}}">Continue with GitHub</a>
-<a class="button" href="?provider=google&amp;state={{.State}}">Continue with Google</a></body></html>`))
+{{range .Providers}}<a class="button" href="?provider={{.ID}}&amp;state={{$.State}}">Continue with {{.Label}}</a>{{end}}</body></html>`))
 
 var messagePageTemplate = template.Must(template.New("message").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}}</title><style>body{font:16px system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1.25rem;color:#171717}h1{font-size:1.6rem}p{color:#555}</style></head>
 <body><h1>{{.Title}}</h1><p>{{.Message}}</p></body></html>`))
 
-func renderProviderPage(state string) pluginapi.ManagementResponse {
+func renderProviderPage(state string, providers []loginProvider) pluginapi.ManagementResponse {
 	var body bytes.Buffer
 	_ = providerPageTemplate.Execute(&body, struct {
-		State string
-	}{State: state})
+		State     string
+		Providers []loginProvider
+	}{State: state, Providers: providers})
 	return pluginapi.ManagementResponse{StatusCode: http.StatusOK, Headers: browserHeaders(nil), Body: body.Bytes()}
 }
 

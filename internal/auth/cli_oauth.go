@@ -31,8 +31,15 @@ func (p *Provider) runLocalLogin(ctx context.Context, settings pluginconfig.Sett
 	if provider == "" {
 		provider = "github"
 	}
-	if provider != "github" && provider != "google" {
-		return pluginapi.AuthData{}, nil, fmt.Errorf("Mirasim OAuth provider must be github or google")
+	if !providerSlug.MatchString(provider) {
+		return pluginapi.AuthData{}, nil, fmt.Errorf("invalid Mirasim OAuth provider")
+	}
+	providers, errDiscovery := discoverLoginProviders(ctx, settings.AdminURL, proxyURL)
+	if errDiscovery != nil {
+		return pluginapi.AuthData{}, nil, errDiscovery
+	}
+	if !providerOffered(providers, provider) {
+		return pluginapi.AuthData{}, nil, fmt.Errorf("Mirasim OAuth provider %q is not currently offered", provider)
 	}
 	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
 	if errListen != nil {

@@ -186,6 +186,10 @@ func TestManagementOAuthRejectsCredentialsThatFailRemoteValidation(t *testing.T)
 func newOAuthProfileServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/oauth/providers" {
+			_, _ = w.Write([]byte(`{"providers":["github","google"]}`))
+			return
+		}
 		if r.Method != http.MethodGet || r.URL.Path != "/auth/me" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 			t.Errorf("profile request = %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
