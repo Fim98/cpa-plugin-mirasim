@@ -21,10 +21,11 @@ const (
 // thinking suffix. ModelName never contains a leading mirasim/ prefix or a
 // trailing parenthesized suffix.
 type ParsedModel struct {
-	ModelName string
-	Config    pluginapi.ThinkingConfig
-	HasSuffix bool
-	HasConfig bool
+	LongContext bool
+	ModelName   string
+	Config      pluginapi.ThinkingConfig
+	HasSuffix   bool
+	HasConfig   bool
 }
 
 // ConfigError is returned when a requested thinking control cannot be
@@ -65,7 +66,7 @@ func ParseModel(model string) ParsedModel {
 	parsed := ParsedModel{ModelName: model}
 	open := strings.LastIndex(model, "(")
 	if open < 0 || !strings.HasSuffix(model, ")") {
-		return parsed
+		return parseContextSelector(parsed)
 	}
 	parsed.ModelName = strings.TrimSpace(model[:open])
 	parsed.HasSuffix = true
@@ -90,6 +91,14 @@ func ParseModel(model string) ParsedModel {
 			}
 			parsed.HasConfig = true
 		}
+	}
+	return parseContextSelector(parsed)
+}
+
+func parseContextSelector(parsed ParsedModel) ParsedModel {
+	if strings.HasPrefix(strings.ToLower(parsed.ModelName), "claude-") && strings.HasSuffix(strings.ToLower(parsed.ModelName), "[1m]") {
+		parsed.ModelName = strings.TrimSpace(parsed.ModelName[:len(parsed.ModelName)-4])
+		parsed.LongContext = true
 	}
 	return parsed
 }

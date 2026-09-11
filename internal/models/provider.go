@@ -113,7 +113,7 @@ func New(settings pluginconfig.Settings, pool *mirasim.Pool) *Provider {
 }
 
 func (p *Provider) StaticModels(context.Context, pluginapi.StaticModelRequest) (pluginapi.ModelResponse, error) {
-	return pluginapi.ModelResponse{Provider: credentials.Provider, Models: fallbackModels()}, nil
+	return pluginapi.ModelResponse{Provider: credentials.Provider, Models: withLongContextAliases(fallbackModels())}, nil
 }
 
 func (p *Provider) ModelsForAuth(ctx context.Context, req pluginapi.AuthModelRequest) (pluginapi.ModelResponse, error) {
@@ -131,6 +131,7 @@ func (p *Provider) ModelsForAuth(ctx context.Context, req pluginapi.AuthModelReq
 	models := exposedModels(catalog.Models)
 	roster := p.pool.Client(*storage).ModelRoster(ctx, req.HTTPClient)
 	applyRoster(models, roster)
+	models = withLongContextAliases(models)
 	return pluginapi.ModelResponse{Provider: credentials.Provider, Models: models}, nil
 }
 

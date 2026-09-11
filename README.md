@@ -74,6 +74,8 @@ The fallback catalog includes GPT 6 Astra and GPT 5.6 Sol/Terra/Luna. Their fall
 
 Model membership comes from the account's `/v1/models`. Signed `/v1/model-roster` overlays context/output limits and effort when available. Specs are cached per credential in memory for ten minutes; failures retain that credential's last successful specs, otherwise static defaults apply. The cache is not persisted in auth files and resets on reload. CPA 7.2.146 cannot publish `autoCompactRatio`, so callers still control compaction thresholds.
 
+Claude models with a known context of at least one million tokens also publish `[1m]` selector aliases. For example, `claude-sonnet-5[1m](high)` strips both selectors before forwarding the real model ID, retains high effort, and adds `context-1m-2025-08-07` without losing other beta tokens.
+
 ## Codex compaction
 
 CPA Responses compact requests use `/v1/responses/compact`, including the `/backend-api/codex/responses/compact` alias. This path accepts non-streaming Responses input/output and preserves opaque compaction items. Ordinary Responses completions retain their SSE handling.

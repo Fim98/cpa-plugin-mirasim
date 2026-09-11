@@ -50,7 +50,7 @@ func (e *Executor) Execute(ctx context.Context, req pluginapi.ExecutorRequest) (
 	if errBuild != nil {
 		return pluginapi.ExecutorResponse{}, errBuild
 	}
-	resp, errDo := client.Do(ctx, req.HTTPClient, http.MethodPost, route.Path, route.Query, upstreamHeaders(req.Headers, route.Format), requestBody)
+	resp, errDo := client.Do(ctx, req.HTTPClient, http.MethodPost, route.Path, route.Query, requestHeaders(req, route.Format), requestBody)
 	if errDo != nil {
 		return pluginapi.ExecutorResponse{}, errDo
 	}
@@ -87,7 +87,7 @@ func (e *Executor) ExecuteStream(ctx context.Context, req pluginapi.ExecutorRequ
 	if errBuild != nil {
 		return pluginapi.ExecutorStreamResponse{}, errBuild
 	}
-	resp, errDo := client.DoStream(ctx, req.HTTPClient, http.MethodPost, route.Path, route.Query, upstreamHeaders(req.Headers, route.Format), requestBody)
+	resp, errDo := client.DoStream(ctx, req.HTTPClient, http.MethodPost, route.Path, route.Query, requestHeaders(req, route.Format), requestBody)
 	if errDo != nil {
 		return pluginapi.ExecutorStreamResponse{}, errDo
 	}
@@ -119,7 +119,7 @@ func (e *Executor) CountTokens(ctx context.Context, req pluginapi.ExecutorReques
 	if errNormalize != nil {
 		return pluginapi.ExecutorResponse{}, errNormalize
 	}
-	resp, errDo := client.Do(ctx, req.HTTPClient, http.MethodPost, "/v1/messages/count_tokens", req.Query, upstreamHeaders(req.Headers, sdktranslator.FormatClaude), requestBody)
+	resp, errDo := client.Do(ctx, req.HTTPClient, http.MethodPost, "/v1/messages/count_tokens", req.Query, requestHeaders(req, sdktranslator.FormatClaude), requestBody)
 	if errDo != nil {
 		return pluginapi.ExecutorResponse{}, errDo
 	}
@@ -175,6 +175,9 @@ func (e *Executor) HttpRequest(ctx context.Context, req pluginapi.ExecutorHTTPRe
 		}
 	}
 	headers := cloneHeaders(req.Headers)
+	if strings.HasPrefix(relayPath, "/v1/messages") && thinkingpkg.ParseModel(modelFromJSON(req.Body)).LongContext {
+		addLongContextBeta(headers)
+	}
 	if relayPath == compactPath {
 		body, errParse = compactBody(body, modelFromJSON(body))
 		if errParse != nil {
@@ -440,6 +443,28 @@ func normalizeBody(body []byte, model string, stream bool, wire sdktranslator.Fo
 		return nil, fmt.Errorf("encode translated Mirasim request: %w", errMarshal)
 	}
 	return updated, nil
+}
+
+func requestHeaders(req pluginapi.ExecutorRequest, wire sdktranslator.Format) http.Header {
+	headers := upstreamHeaders(req.Headers, wire)
+	if wire == sdktranslator.FormatClaude && (thinkingpkg.ParseModel(req.Model).LongContext || thinkingpkg.ParseModel(modelFromJSON(req.Payload)).LongContext) {
+		addLongContextBeta(headers)
+	}
+	return headers
+}
+
+func addLongContextBeta(headers http.Header) {
+	const beta = "context-1m-2025-08-07"
+	values := headers.Values("Anthropic-Beta")
+	for _, v := range values {
+		for _, entry := range strings.Split(v, ",") {
+			if strings.TrimSpace(entry) == beta {
+				return
+			}
+		}
+	}
+	values = append(values, beta)
+	headers.Set("Anthropic-Beta", strings.Join(values, ","))
 }
 
 func upstreamHeaders(source http.Header, wire sdktranslator.Format) http.Header {

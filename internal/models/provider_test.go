@@ -15,7 +15,7 @@ func TestStaticModelsExposeClaudeAndGPTFallback(t *testing.T) {
 	if errModels != nil {
 		t.Fatalf("StaticModels() error = %v", errModels)
 	}
-	if resp.Provider != "mirasim" || len(resp.Models) != len(fallbackModelIDs) {
+	if resp.Provider != "mirasim" || len(resp.Models) != len(fallbackModelIDs)+6 {
 		t.Fatalf("response = %#v", resp)
 	}
 	claudeCount := 0
@@ -39,7 +39,7 @@ func TestStaticModelsExposeClaudeAndGPTFallback(t *testing.T) {
 			t.Fatalf("unexpected model family: %#v", model)
 		}
 	}
-	if claudeCount != 7 || gptCount != 4 {
+	if claudeCount != 13 || gptCount != 4 {
 		t.Fatalf("fallback family counts: Claude=%d GPT=%d", claudeCount, gptCount)
 	}
 	byID := make(map[string]pluginapi.ModelInfo, len(resp.Models))
