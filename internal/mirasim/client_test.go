@@ -165,41 +165,51 @@ func TestFetchQuotaUsesStructuredLimits(t *testing.T) {
 	}
 }
 
-func TestFetchQuotaFallsBackToSignedMessagesHeaderProbe(t *testing.T) {
-	accessToken := futureJWT()
-	storage, publicKey, relayPrivate := newTestStorage(t, accessToken)
-	client := NewClient(storage)
-	calls := 0
-	host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
-		calls++
-		parsed, _ := url.Parse(req.URL)
-		switch parsed.Path {
-		case sessionPath:
-			assertDeviceSessionRequest(t, publicKey, req, accessToken)
-			return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"ticket":"device-ticket","expiresIn":900}`)}, nil
-		case limitsPath:
-			assertSealedRelayRequest(t, publicKey, relayPrivate, req, "device-ticket")
-			return pluginapi.HTTPResponse{StatusCode: http.StatusMethodNotAllowed, Headers: make(http.Header), Body: []byte(`{"error":"unsupported"}`)}, nil
-		case "/v1/messages":
-			assertSealedRelayRequest(t, publicKey, relayPrivate, req, "device-ticket")
-			if req.Headers.Get(quotaProbeHeader) != "usage" || !strings.Contains(string(req.Body), quotaProbeModel) {
-				t.Errorf("probe header/body = %q / %s", req.Headers.Get(quotaProbeHeader), req.Body)
+func TestQuotaUnavailableNeverTriggersInference(t *testing.T) {
+	for _, status := range []int{404, 405, 420, 429, 503} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			storage, _, _ := newTestStorage(t, futureJWT())
+			client := NewClient(storage)
+			client.quota = QuotaSnapshot{Available: true, Status: "allowed"}
+			calls := 0
+			host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+				u, _ := url.Parse(req.URL)
+				if u.Path == sessionPath {
+					return pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"ticket":"ticket","expiresIn":900}`)}, nil
+				}
+				calls++
+				if u.Path != limitsPath || req.Method != http.MethodGet {
+					t.Fatalf("unexpected inference: %s %s", req.Method, u.Path)
+				}
+				return pluginapi.HTTPResponse{StatusCode: status, Headers: http.Header{"Retry-After": []string{"12"}}, Body: []byte(`{"error":{"type":"quota_error","message":"unavailable"}}`)}, nil
+			}}
+			quota, err := client.FetchQuota(context.Background(), host)
+			if calls != 1 {
+				t.Fatalf("calls = %d", calls)
 			}
-			headers := make(http.Header)
-			headers.Set(quotaHeaderNames[0], "0.4")
-			headers.Set(quotaHeaderNames[1], "1788167238")
-			return pluginapi.HTTPResponse{StatusCode: http.StatusTooManyRequests, Headers: headers, Body: []byte(`{"error":"rate limited"}`)}, nil
-		default:
-			return pluginapi.HTTPResponse{}, fmt.Errorf("unexpected path %s", parsed.Path)
-		}
-	}}
-
-	quota, errQuota := client.FetchQuota(context.Background(), host)
-	if errQuota != nil {
-		t.Fatalf("FetchQuota() error = %v", errQuota)
+			if status == 404 || status == 405 {
+				if err != nil || quota.Available || quota.Status != "unknown" || client.LastQuota().Available {
+					t.Fatalf("quota=%+v err=%v", quota, err)
+				}
+			} else {
+				e, ok := err.(*StatusError)
+				if !ok || e.StatusCode() != status || e.RetryAfter() == nil {
+					t.Fatalf("error lost upstream details: %v", err)
+				}
+			}
+		})
 	}
-	if calls != 3 || !quota.Available || quota.Source != quotaProbeSource || quota.FiveHour.Utilization != "0.4" {
-		t.Fatalf("calls = %d, quota = %#v", calls, quota)
+}
+
+func TestQuotaThresholdAndArbitraryWindows(t *testing.T) {
+	for _, tt := range []struct {
+		used, want float64
+		status     string
+	}{{98.94, 98.9, "warning"}, {98.96, 100, "limit_reached"}, {99, 100, "limit_reached"}} {
+		q, err := QuotaFromLimits([]byte(fmt.Sprintf(`{"windows":[{"name":"7d_fable","budget":100,"used":%v,"model_scoped":true}]}`, tt.used)), time.Now())
+		if err != nil || len(q.Windows) != 1 || *q.Windows[0].UsedPercent != tt.want || q.Windows[0].Status != tt.status || !q.Windows[0].ModelScoped {
+			t.Fatalf("q=%+v err=%v", q, err)
+		}
 	}
 }
 

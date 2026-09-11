@@ -105,7 +105,7 @@ func (h *Handler) HandleWithHost(ctx context.Context, req pluginapi.ManagementRe
 	return jsonResponse(http.StatusOK, map[string]any{
 		"auth_index": authIndex,
 		"quota":      quota,
-		"note":       "Quota is read from GET /v1/limits, with Mirasim's signed Messages header probe as a compatibility fallback.",
+		"note":       "Quota is read from GET /v1/limits; unavailable limits never trigger inference.",
 	}), nil
 }
 

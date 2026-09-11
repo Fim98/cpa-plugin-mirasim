@@ -40,9 +40,7 @@ const (
 	maxErrorMessage    = 4 << 10
 	quotaHeaderSource  = "GET /v1/models response headers"
 	quotaLimitsSource  = "GET /v1/limits JSON"
-	quotaProbeSource   = "POST /v1/messages response headers"
 	quotaProbeHeader   = "x-mirasim-probe"
-	quotaProbeModel    = "claude-haiku-4-5-20251001-paid"
 	claudeOAuthBeta    = "oauth-2025-04-20"
 )
 
@@ -360,8 +358,8 @@ func (c *Client) ListModels(ctx context.Context, client pluginapi.HostHTTPClient
 	return Catalog{Models: models, Quota: quota}, nil
 }
 
-// FetchQuota follows the official client contract: structured limits first,
-// then the legacy rate-limit-header probe when that route is unavailable.
+// FetchQuota queries structured limits only. A missing route must never
+// trigger a billable inference request.
 func (c *Client) FetchQuota(ctx context.Context, client pluginapi.HostHTTPClient) (QuotaSnapshot, error) {
 	providerHeaders := http.Header{quotaProbeHeader: []string{"usage"}}
 	resp, errDo := c.do(ctx, client, http.MethodGet, limitsPath, nil, http.Header{
@@ -370,8 +368,10 @@ func (c *Client) FetchQuota(ctx context.Context, client pluginapi.HostHTTPClient
 	if errDo != nil {
 		return QuotaSnapshot{}, errDo
 	}
-	if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == 420 {
-		return c.fetchQuotaFromHeaders(ctx, client, providerHeaders)
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+		quota := QuotaSnapshot{Source: quotaLimitsSource, Status: "unknown", ObservedAt: time.Now().UTC()}
+		c.replaceQuota(quota)
+		return quota, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return QuotaSnapshot{}, NewStatusError(resp.StatusCode, resp.Body, resp.Headers)
@@ -381,40 +381,6 @@ func (c *Client) FetchQuota(ctx context.Context, client pluginapi.HostHTTPClient
 		return QuotaSnapshot{}, errParse
 	}
 	c.replaceQuota(quota)
-	return quota.Clone(), nil
-}
-
-func (c *Client) fetchQuotaFromHeaders(ctx context.Context, client pluginapi.HostHTTPClient, providerHeaders http.Header) (QuotaSnapshot, error) {
-	body, errMarshal := json.Marshal(map[string]any{
-		"model":      quotaProbeModel,
-		"max_tokens": 1,
-		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
-	})
-	if errMarshal != nil {
-		return QuotaSnapshot{}, errMarshal
-	}
-	resp, errDo := c.do(ctx, client, http.MethodPost, "/v1/messages", nil, http.Header{
-		"Accept":            []string{"application/json"},
-		"Anthropic-Version": []string{"2023-06-01"},
-		"Content-Type":      []string{"application/json"},
-	}, providerHeaders, body)
-	if errDo != nil {
-		return QuotaSnapshot{}, errDo
-	}
-	quota, available := QuotaFromHeaders(resp.Headers, time.Now())
-	quota.Source = quotaProbeSource
-	if !available {
-		quota = QuotaSnapshot{
-			Available:  false,
-			Source:     quotaProbeSource,
-			ObservedAt: time.Now().UTC(),
-			Headers:    make(map[string]string),
-		}
-	}
-	c.replaceQuota(quota)
-	if (resp.StatusCode < 200 || resp.StatusCode >= 300) && !available {
-		return QuotaSnapshot{}, NewStatusError(resp.StatusCode, resp.Body, resp.Headers)
-	}
 	return quota.Clone(), nil
 }
 
@@ -910,7 +876,7 @@ func QuotaFromLimits(raw []byte, observedAt time.Time) (QuotaSnapshot, error) {
 			Status:      "allowed",
 		}
 		if window.Budget > 0 {
-			used := clampPercent(window.Used / window.Budget * 100)
+			used := quotaUsedPercent(window.Used / window.Budget * 100)
 			remaining := clampPercent(100 - used)
 			window.UsedPercent = &used
 			window.RemainingPercent = &remaining
@@ -956,6 +922,15 @@ func quotaStatus(windows []QuotaLimitWindow) string {
 		}
 	}
 	return status
+}
+
+// Match the official UI: round to one decimal, then saturate at 99%.
+func quotaUsedPercent(value float64) float64 {
+	value = math.Round(clampPercent(value)*10) / 10
+	if value >= 99 {
+		return 100
+	}
+	return value
 }
 
 func clampPercent(value float64) float64 {
