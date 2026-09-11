@@ -86,7 +86,10 @@ func (p *Pool) Forget(storage credentials.Storage) {
 }
 
 type Client struct {
-	storage credentials.Storage
+	rosterMu        sync.Mutex
+	roster          ModelRoster
+	rosterNextCheck time.Time
+	storage         credentials.Storage
 
 	mu                 sync.Mutex
 	loaded             bool

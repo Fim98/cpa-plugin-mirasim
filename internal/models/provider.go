@@ -128,7 +128,10 @@ func (p *Provider) ModelsForAuth(ctx context.Context, req pluginapi.AuthModelReq
 	if errCatalog != nil {
 		return pluginapi.ModelResponse{}, errCatalog
 	}
-	return pluginapi.ModelResponse{Provider: credentials.Provider, Models: exposedModels(catalog.Models)}, nil
+	models := exposedModels(catalog.Models)
+	roster := p.pool.Client(*storage).ModelRoster(ctx, req.HTTPClient)
+	applyRoster(models, roster)
+	return pluginapi.ModelResponse{Provider: credentials.Provider, Models: models}, nil
 }
 
 func fallbackModels() []pluginapi.ModelInfo {

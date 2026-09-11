@@ -66,6 +66,8 @@ Set the remote plugin's `oauth-public-base-url` to `http://127.0.0.1:18317`, res
 
 The fallback catalog includes GPT 6 Astra and GPT 5.6 Sol/Terra/Luna. Their fallback context is 872,000 tokens, matching the inspected 0.0.310 running client selection list, with a 128,000-token output limit. These are client metadata, not account-tested capacity guarantees. Claude Haiku remains in the catalog; a desktop toggle does not imply upstream removal.
 
+Model membership comes from the account's `/v1/models`. Signed `/v1/model-roster` overlays context/output limits and effort when available. Specs are cached per credential in memory for ten minutes; failures retain that credential's last successful specs, otherwise static defaults apply. The cache is not persisted in auth files and resets on reload. CPA 7.2.146 cannot publish `autoCompactRatio`, so callers still control compaction thresholds.
+
 ## Codex compaction
 
 CPA Responses compact requests use `/v1/responses/compact`, including the `/backend-api/codex/responses/compact` alias. This path accepts non-streaming Responses input/output and preserves opaque compaction items. Ordinary Responses completions retain their SSE handling.
