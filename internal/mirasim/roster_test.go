@@ -45,3 +45,22 @@ func TestRosterCacheFallbackAndIsolation(t *testing.T) {
 		t.Fatal("cached roster leaked to another client")
 	}
 }
+
+func TestPoolSeparatesAccountsEvenWhenDeviceKeyIsReused(t *testing.T) {
+	a, _, _ := newTestStorage(t, futureJWT())
+	a.AccountID = "account-a"
+	b := a
+	b.AccountID = "account-b"
+	pool := NewPool()
+	first, second := pool.Client(a), pool.Client(b)
+	if first == second {
+		t.Fatal("different accounts share mutable relay state")
+	}
+	first.roster = ModelRoster{Version: "a"}
+	if second.roster.Version != "" {
+		t.Fatal("roster crossed account boundary")
+	}
+	if pool.Client(a) != first {
+		t.Fatal("same account did not retain client")
+	}
+}

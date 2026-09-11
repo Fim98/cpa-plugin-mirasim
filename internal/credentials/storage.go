@@ -181,7 +181,7 @@ func (s Storage) JSON() []byte {
 }
 
 func (s Storage) Key() string {
-	return strings.Join([]string{deviceFingerprint(s.DevicePrivateKey), s.RelayURL, s.AdminURL, s.ClientVersion}, "\x00")
+	return strings.Join([]string{s.AccountID, deviceFingerprint(s.DevicePrivateKey), s.RelayURL, s.AdminURL, s.ClientVersion}, "\x00")
 }
 
 func (s Storage) AuthData(id, fileName string, nextRefresh time.Time) pluginapi.AuthData {
