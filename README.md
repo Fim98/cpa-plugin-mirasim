@@ -62,6 +62,10 @@ go build -o .\dist\mirasim-oauth-bridge.exe .\cmd\mirasim-oauth-bridge
 
 Set the remote plugin's `oauth-public-base-url` to `http://127.0.0.1:18317`, restart CPA, and repeat login with the bridge running. The bridge forwards only OAuth resource requests and restores the pending login state; it is needed only during login. Its optional `--dial-address <IP:port>` pins the upstream connection while retaining HTTPS hostname verification and bypassing environment proxies.
 
+## Model metadata
+
+The fallback catalog includes GPT 6 Astra and GPT 5.6 Sol/Terra/Luna. Their fallback context is 872,000 tokens, matching the inspected 0.0.310 running client selection list, with a 128,000-token output limit. These are client metadata, not account-tested capacity guarantees. Claude Haiku remains in the catalog; a desktop toggle does not imply upstream removal.
+
 ## Codex compaction
 
 CPA Responses compact requests use `/v1/responses/compact`, including the `/backend-api/codex/responses/compact` alias. This path accepts non-streaming Responses input/output and preserves opaque compaction items. Ordinary Responses completions retain their SSE handling.

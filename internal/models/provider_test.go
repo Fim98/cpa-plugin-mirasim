@@ -39,12 +39,16 @@ func TestStaticModelsExposeClaudeAndGPTFallback(t *testing.T) {
 			t.Fatalf("unexpected model family: %#v", model)
 		}
 	}
-	if claudeCount != 7 || gptCount != 3 {
+	if claudeCount != 7 || gptCount != 4 {
 		t.Fatalf("fallback family counts: Claude=%d GPT=%d", claudeCount, gptCount)
 	}
 	byID := make(map[string]pluginapi.ModelInfo, len(resp.Models))
 	for _, model := range resp.Models {
 		byID[model.ID] = model
+	}
+	astra := byID["gpt-6-astra"]
+	if astra.ContextLength != 872000 || astra.MaxCompletionTokens != 128000 || astra.Thinking == nil {
+		t.Fatalf("Astra metadata=%+v", astra)
 	}
 	sonnet := byID["claude-sonnet-5"]
 	if sonnet.ContextLength != 1000000 || sonnet.MaxCompletionTokens != 128000 || sonnet.Thinking == nil || !sonnet.Thinking.DynamicAllowed || !sonnet.Thinking.ZeroAllowed || len(sonnet.Thinking.Levels) != 5 || sonnet.Thinking.Levels[0] != "low" || sonnet.Thinking.Levels[4] != "max" {
@@ -87,7 +91,7 @@ func TestModelInfoPreservesLiveIdentityAndAddsKnownCapabilities(t *testing.T) {
 	if model.Object != "custom-model" || model.Created != 42 || model.OwnedBy != "relay-owner" {
 		t.Fatalf("live identity fields were replaced: %#v", model)
 	}
-	if model.Type != "openai" || model.DisplayName != "GPT 5.6 Sol" || model.ContextLength != 372000 || model.MaxCompletionTokens != 128000 || model.Thinking == nil {
+	if model.Type != "openai" || model.DisplayName != "GPT 5.6 Sol" || model.ContextLength != 872000 || model.MaxCompletionTokens != 128000 || model.Thinking == nil {
 		t.Fatalf("known GPT metadata was not enriched: %#v", model)
 	}
 	wantLevels := []string{"low", "medium", "high", "xhigh", "max"}
