@@ -72,5 +72,7 @@ func (e *Executor) executeCompact(ctx context.Context, req pluginapi.ExecutorReq
 	if !json.Valid(resp.Body) {
 		return pluginapi.ExecutorResponse{}, compactError("Mirasim compact returned invalid JSON")
 	}
-	return pluginapi.ExecutorResponse{Payload: resp.Body, Headers: cloneHeaders(resp.Headers)}, nil
+	responseHeaders := cloneHeaders(resp.Headers)
+	responseHeaders.Set("Content-Type", "application/json")
+	return pluginapi.ExecutorResponse{Payload: resp.Body, Headers: responseHeaders}, nil
 }

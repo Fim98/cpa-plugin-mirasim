@@ -36,7 +36,16 @@ func TestCompactPreservesOpaqueHistoryAndJSON(t *testing.T) {
 			t.Fatalf("response=%s err=%v", r.Payload, err)
 		}
 	}
-	if calls != 2 {
+	rawResponse, rawErr := e.HttpRequest(context.Background(), pluginapi.ExecutorHTTPRequest{
+		URL:         "https://chatgpt.com/backend-api/codex/responses/compact?beta=true",
+		Method:      http.MethodPost,
+		Body:        []byte(`{"model":"mirasim/gpt-6-astra","stream":false,"input":[{"type":"compaction","encrypted_content":"opaque"}]}`),
+		StorageJSON: storage.JSON(), HTTPClient: host,
+	})
+	if rawErr != nil || string(rawResponse.Body) != string(want) {
+		t.Fatalf("raw compact error=%v response=%s", rawErr, rawResponse.Body)
+	}
+	if calls != 3 {
 		t.Fatalf("calls=%d", calls)
 	}
 	if normalizeRelayPath("/backend-api/codex/responses/compact") != compactPath {
