@@ -91,9 +91,9 @@ func Parse(raw []byte, defaults pluginconfig.Settings) (*Storage, error) {
 	if strings.TrimSpace(storage.AdminURL) == "" {
 		storage.AdminURL = defaults.AdminURL
 	}
-	if strings.TrimSpace(storage.ClientVersion) == "" {
-		storage.ClientVersion = defaults.ClientVersion
-	}
+	// Client version describes this executable's protocol, not the account.
+	// Old OAuth snapshots must not pin upgraded code to an obsolete version.
+	storage.ClientVersion = defaults.ClientVersion
 	storage.applyDefaults()
 	storage.ensureTokenTiming(time.Now())
 	storage.PopulatePlanFromAccessToken()

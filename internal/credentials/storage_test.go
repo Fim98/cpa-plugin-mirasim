@@ -16,6 +16,21 @@ import (
 	pluginconfig "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/config"
 )
 
+func TestOldOAuthSnapshotUsesRunningClientVersion(t *testing.T) {
+	old, err := InstallOAuth(FromSettings(pluginconfig.Settings{ClientVersion: "0.0.272"}), "access", "refresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []string{"0.0.310", "custom-version"} {
+		settings := pluginconfig.Defaults()
+		settings.ClientVersion = version
+		parsed, err := Parse(old.JSON(), settings)
+		if err != nil || parsed.ClientVersion != version || parsed.AccessToken != old.AccessToken || parsed.DevicePrivateKey != old.DevicePrivateKey {
+			t.Fatalf("parse err=%v", err)
+		}
+	}
+}
+
 func TestInstallOAuthReturnsSelfContainedAuthStorage(t *testing.T) {
 	base := FromSettings(pluginconfig.Settings{
 		RelayURL:      "https://relay.example",

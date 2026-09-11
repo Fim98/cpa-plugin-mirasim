@@ -76,7 +76,7 @@ func TestDefaultsUseCurrentMirasimEndpointsAndProtocolVersion(t *testing.T) {
 	t.Setenv("MIRASIM_ADMIN_URL", "")
 	t.Setenv("MIRASIM_CLIENT_VERSION", "")
 	settings := Defaults()
-	if settings.RelayURL != "https://relay.mirasim.ai" || settings.AdminURL != "https://auth.mirasim.ai" || settings.ClientVersion != "0.0.272" {
+	if settings.RelayURL != "https://relay.mirasim.ai" || settings.AdminURL != "https://auth.mirasim.ai" || settings.ClientVersion != "0.0.310" {
 		t.Fatalf("defaults = %#v", settings)
 	}
 }

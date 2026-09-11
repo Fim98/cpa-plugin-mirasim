@@ -10,7 +10,7 @@ import (
 const (
 	DefaultRelayURL      = "https://relay.mirasim.ai"
 	DefaultAdminURL      = "https://auth.mirasim.ai"
-	DefaultClientVersion = "0.0.272"
+	DefaultClientVersion = "0.0.310"
 )
 
 // Settings contains public provider and OAuth callback defaults. Credential
