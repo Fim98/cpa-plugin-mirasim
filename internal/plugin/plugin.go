@@ -36,7 +36,7 @@ func Build(configYAML []byte) pluginapi.Plugin {
 	return pluginapi.Plugin{
 		Metadata: pluginapi.Metadata{
 			Name:             "Mirasim Provider",
-			Version:          "0.8.0",
+			Version:          "1.0.0",
 			Author:           "router-for-me",
 			GitHubRepository: "https://github.com/router-for-me/cpa-plugin-mirasim",
 			ConfigFields: []pluginapi.ConfigField{
