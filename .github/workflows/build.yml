@@ -218,19 +218,42 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang lld wget
 
+      - name: Fetch FreeBSD sysroot
+        timeout-minutes: 15
+        env:
+          FREEBSD_RELEASE: 14.3-RELEASE
+        run: |
+          set -euo pipefail
+          # download.freebsd.org only carries supported releases; once a release is
+          # retired it moves to archive.freebsd.org, so try both before failing.
+          for base in \
+            "https://download.freebsd.org/releases/amd64/${FREEBSD_RELEASE}" \
+            "https://archive.freebsd.org/old-releases/amd64/${FREEBSD_RELEASE}"; do
+            if wget -q --tries=3 -O base.txz "${base}/base.txz"; then
+              echo "Fetched sysroot from ${base}"
+              break
+            fi
+            rm -f base.txz
+          done
+          test -s base.txz
+          mkdir -p "${RUNNER_TEMP}/freebsd-sysroot"
+          sudo tar -xf base.txz -C "${RUNNER_TEMP}/freebsd-sysroot"
+          rm -f base.txz
+
       - name: Build FreeBSD shared library
         timeout-minutes: 45
-        uses: go-cross/cgo-actions@v1
         env:
-          GOFLAGS: -trimpath -buildmode=c-shared
-        with:
-          dir: .
-          packages: ./cmd/mirasim
-          targets: freebsd-amd64
-          out-dir: dist/freebsd-amd64
-          output: ${{ env.PLUGIN_ID }}.so
-          flags: -ldflags=-s -w
-          x-flags: main.pluginVersion=${{ steps.release_metadata.outputs.version }}
+          FREEBSD_TARGET: x86_64-unknown-freebsd14.3
+        run: |
+          set -euo pipefail
+          mkdir -p dist/freebsd-amd64
+          CGO_ENABLED=1 GOOS=freebsd GOARCH=amd64 \
+            CC="clang --target=${FREEBSD_TARGET} --sysroot=${RUNNER_TEMP}/freebsd-sysroot" \
+            CGO_LDFLAGS=-fuse-ld=lld \
+            go build -trimpath -buildmode=c-shared \
+              -ldflags "-s -w -X main.pluginVersion=${VERSION}" \
+              -o "dist/freebsd-amd64/${PLUGIN_ID}.so" \
+              ./cmd/mirasim
 
       - name: Package plugin
         run: |
