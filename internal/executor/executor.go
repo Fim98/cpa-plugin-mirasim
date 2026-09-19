@@ -119,6 +119,7 @@ func (e *Executor) CountTokens(ctx context.Context, req pluginapi.ExecutorReques
 	if errNormalize != nil {
 		return pluginapi.ExecutorResponse{}, errNormalize
 	}
+	requestBody = thinkingpkg.NormalizeForWire(requestBody, normalizeModel(req.Model), sdktranslator.FormatClaude.String(), claudeShape(client, req.Model))
 	resp, errDo := client.Do(ctx, req.HTTPClient, http.MethodPost, "/v1/messages/count_tokens", req.Query, requestHeaders(req, sdktranslator.FormatClaude), requestBody)
 	if errDo != nil {
 		return pluginapi.ExecutorResponse{}, errDo
@@ -259,6 +260,8 @@ func buildProviderRequest(req pluginapi.ExecutorRequest, stream bool, shape thin
 		if errNormalize != nil {
 			return nil, providerRoute{}, errNormalize
 		}
+	} else {
+		body = thinkingpkg.NormalizeForWire(body, model, wire.String(), shape)
 	}
 	path := "/v1/responses"
 	if wire == sdktranslator.FormatClaude {
@@ -520,7 +523,7 @@ func normalizeHTTPRequestBody(body []byte, model string, wire sdktranslator.Form
 		}
 		return updated, nil
 	}
-	return updated, nil
+	return thinkingpkg.NormalizeForWire(updated, parsedModel.ModelName, wire.String(), shape), nil
 }
 
 func cloneHeaders(source http.Header) http.Header {

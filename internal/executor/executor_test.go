@@ -213,6 +213,23 @@ func TestBuildProviderRequestAppliesThinkingSuffixAfterTranslation(t *testing.T)
 	}
 }
 
+func TestBuildProviderRequestRepairsClaudeThinkingWithoutASuffix(t *testing.T) {
+	body, route, errBuild := buildProviderRequest(pluginapi.ExecutorRequest{
+		Model:        "claude-sonnet-5",
+		SourceFormat: sdktranslator.FormatClaude.String(),
+		Payload:      []byte(`{"model":"claude-sonnet-5","max_tokens":32000,"messages":[{"role":"user","content":"hello"}],"thinking":{"type":"enabled","budget_tokens":10000}}`),
+	}, false, thinkingpkg.ShapeAdaptive)
+	if errBuild != nil {
+		t.Fatal(errBuild)
+	}
+	if route.Path != "/v1/messages" || gjson.GetBytes(body, "thinking.type").String() != "adaptive" || gjson.GetBytes(body, "output_config.effort").String() != "high" {
+		t.Fatalf("body = %s, route = %#v", body, route)
+	}
+	if gjson.GetBytes(body, "thinking.budget_tokens").Exists() {
+		t.Fatalf("token budget reached an effort-form model: %s", body)
+	}
+}
+
 func TestBuildProviderRequestAppliesClaudeEffort(t *testing.T) {
 	body, _, errBuild := buildProviderRequest(pluginapi.ExecutorRequest{
 		Model:        "claude-sonnet-5(low)",

@@ -147,6 +147,70 @@ func ApplyForWireWithShape(body []byte, model, wire string, config pluginapi.Thi
 	}
 }
 
+// NormalizeForWire rewrites thinking controls a caller supplied in the request
+// body into the form the model accepts. CPA's parenthesized suffix is only one
+// way a thinking amount reaches this plugin: a client speaking native Claude
+// sends the controls in the payload, and forwarding a token budget to an
+// effort-form model is refused upstream on every turn. A request that says
+// nothing about thinking, or whose controls have no equivalent in the target
+// form, is returned unchanged; this repairs a mismatched shape and never
+// invents an amount or rejects a request the suffix path would have accepted.
+func NormalizeForWire(body []byte, model, wire string, shape ModelShape) []byte {
+	if strings.ToLower(strings.TrimSpace(wire)) != wireClaude {
+		return body
+	}
+	config, ok := claudeBodyConfig(validBody(body), shape)
+	if !ok {
+		return body
+	}
+	normalized, errApply := ApplyForWireWithShape(body, model, wire, config, shape)
+	if errApply != nil {
+		return body
+	}
+	return normalized
+}
+
+// claudeBodyConfig maps the controls already present in a Claude payload onto
+// the form the model accepts, so a caller that sent a token budget to an
+// effort-form model keeps the amount it asked for instead of being refused.
+func claudeBodyConfig(body []byte, shape ModelShape) (pluginapi.ThinkingConfig, bool) {
+	config, ok := claudeBodyThinking(body)
+	if !ok || config.Mode != "budget" || !adaptiveClaude(shape) {
+		return config, ok
+	}
+	level := budgetToLevel(config.Budget)
+	if level == "minimal" {
+		// The effort ladder this plugin publishes starts at low.
+		level = "low"
+	}
+	if !isAdaptiveClaudeEffort(level) {
+		return pluginapi.ThinkingConfig{}, false
+	}
+	return pluginapi.ThinkingConfig{Mode: "level", Level: level}, true
+}
+
+func claudeBodyThinking(body []byte) (pluginapi.ThinkingConfig, bool) {
+	effort := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "output_config.effort").String()))
+	switch strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String())) {
+	case "disabled":
+		return pluginapi.ThinkingConfig{Mode: "none"}, true
+	case "adaptive":
+		if effort != "" {
+			return pluginapi.ThinkingConfig{Mode: "level", Level: effort}, true
+		}
+		return pluginapi.ThinkingConfig{Mode: "auto", Budget: -1}, true
+	case "enabled":
+		if budget := int(gjson.GetBytes(body, "thinking.budget_tokens").Int()); budget > 0 {
+			return pluginapi.ThinkingConfig{Mode: "budget", Budget: budget}, true
+		}
+		return pluginapi.ThinkingConfig{Mode: "auto", Budget: -1}, true
+	}
+	if effort != "" {
+		return pluginapi.ThinkingConfig{Mode: "level", Level: effort}, true
+	}
+	return pluginapi.ThinkingConfig{}, false
+}
+
 func workflowError() error {
 	return &ConfigError{Code: "mirasim_client_workflow_required", Message: "Mirasim ultra requires the official client's workflow orchestration; use max for a single API request"}
 }

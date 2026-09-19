@@ -153,6 +153,44 @@ func TestApplyForWireFollowsRosterShape(t *testing.T) {
 	}
 }
 
+func TestNormalizeForWireRepairsCallerSuppliedClaudeThinking(t *testing.T) {
+	// A client speaking native Claude puts the amount in the payload rather
+	// than in a CPA model suffix, so the shape still has to be corrected.
+	budget := []byte(`{"model":"claude-sonnet-5","max_tokens":32000,"messages":[],"thinking":{"type":"enabled","budget_tokens":10000}}`)
+	adaptive := NormalizeForWire(budget, "claude-sonnet-5", wireClaude, ShapeAdaptive)
+	if gjson.GetBytes(adaptive, "thinking.type").String() != "adaptive" || gjson.GetBytes(adaptive, "output_config.effort").String() != "high" {
+		t.Fatalf("body = %s", adaptive)
+	}
+	if gjson.GetBytes(adaptive, "thinking.budget_tokens").Exists() {
+		t.Fatalf("effort form kept a token budget: %s", adaptive)
+	}
+
+	effort := []byte(`{"model":"claude-legacy","max_tokens":32000,"messages":[],"thinking":{"type":"adaptive"},"output_config":{"effort":"medium","format":{"type":"json_schema"}}}`)
+	manual := NormalizeForWire(effort, "claude-legacy", wireClaude, ShapeBudget)
+	if gjson.GetBytes(manual, "thinking.type").String() != "enabled" || gjson.GetBytes(manual, "thinking.budget_tokens").Int() != 8192 {
+		t.Fatalf("body = %s", manual)
+	}
+	if gjson.GetBytes(manual, "output_config.effort").Exists() || gjson.GetBytes(manual, "output_config.format.type").String() != "json_schema" {
+		t.Fatalf("output_config was not preserved without effort: %s", manual)
+	}
+
+	disabled := []byte(`{"model":"claude-sonnet-5","max_tokens":1024,"messages":[],"thinking":{"type":"disabled"}}`)
+	if got := NormalizeForWire(disabled, "claude-sonnet-5", wireClaude, ShapeAdaptive); gjson.GetBytes(got, "thinking.type").String() != "disabled" {
+		t.Fatalf("body = %s", got)
+	}
+}
+
+func TestNormalizeForWireLeavesRequestsWithoutThinkingAlone(t *testing.T) {
+	plain := []byte(`{"model":"claude-sonnet-5","max_tokens":1024,"messages":[]}`)
+	if got := NormalizeForWire(plain, "claude-sonnet-5", wireClaude, ShapeAdaptive); string(got) != string(plain) {
+		t.Fatalf("silent thinking activation: %s", got)
+	}
+	codex := []byte(`{"model":"gpt-5.6-sol","reasoning":{"effort":"high"}}`)
+	if got := NormalizeForWire(codex, "gpt-5.6-sol", wireCodex, ShapeUnknown); string(got) != string(codex) {
+		t.Fatalf("codex payload rewritten: %s", got)
+	}
+}
+
 func TestApplyForWireMapsCodexLevelsAndBudgets(t *testing.T) {
 	level, errLevel := ApplyForWire([]byte(`{"model":"gpt-5.6-sol"}`), "gpt-5.6-sol", wireCodex, pluginapi.ThinkingConfig{Mode: "level", Level: "max"})
 	if errLevel != nil || gjson.GetBytes(level, "reasoning.effort").String() != "max" {
