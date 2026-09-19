@@ -710,6 +710,21 @@ func TestParseModelCatalogSupportsDataAndModelsShapes(t *testing.T) {
 	}
 }
 
+func TestParseModelCatalogKeepsTheServedContextWindow(t *testing.T) {
+	models, errParse := ParseModelCatalog([]byte(`{"data":[{"id":"claude-sonnet-5","max_input_tokens":500000},{"id":"gpt-6-astra","max_input_tokens":0},{"id":"claude-opus-5","max_input_tokens":-1},{"id":"gpt-5.6-sol"}]}`))
+	if errParse != nil {
+		t.Fatalf("ParseModelCatalog() error = %v", errParse)
+	}
+	if len(models) != 4 || models[0].MaxInputTokens != 500000 {
+		t.Fatalf("models = %#v", models)
+	}
+	for _, model := range models[1:] {
+		if model.MaxInputTokens != 0 {
+			t.Fatalf("%s reported an unusable context window: %#v", model.ID, model)
+		}
+	}
+}
+
 func TestPrepareHeadersDropsClientCredentials(t *testing.T) {
 	auth := http.Header{"Authorization": []string{"Bearer ticket"}, "X-Mirasim-Enc": []string{"sealed"}}
 	headers := prepareHeaders(http.Header{

@@ -152,9 +152,22 @@ func exposedModels(catalog []mirasim.RemoteModel) []pluginapi.ModelInfo {
 		if !isExposedModel(remote.ID) {
 			continue
 		}
-		models = append(models, modelInfo(remote.ID, remote.Object, remote.Created, remote.OwnedBy))
+		model := modelInfo(remote.ID, remote.Object, remote.Created, remote.OwnedBy)
+		applyCatalogContext(&model, remote.MaxInputTokens)
+		models = append(models, model)
 	}
 	return models
+}
+
+// applyCatalogContext prefers the context window the account's own catalog
+// reports over the static fallback, which is only a snapshot of one inspected
+// client build. A signed roster still overrides both.
+func applyCatalogContext(model *pluginapi.ModelInfo, contextWindow int64) {
+	if contextWindow <= 0 {
+		return
+	}
+	model.ContextLength = contextWindow
+	model.InputTokenLimit = contextWindow
 }
 
 func isExposedModel(id string) bool {

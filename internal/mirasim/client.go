@@ -750,6 +750,9 @@ type RemoteModel struct {
 	Object  string `json:"object"`
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
+	// MaxInputTokens is the context window this account is served for the
+	// model. It is zero when the catalog does not report a usable value.
+	MaxInputTokens int64 `json:"max_input_tokens"`
 }
 
 func ParseModelCatalog(raw []byte) ([]RemoteModel, error) {
@@ -785,6 +788,9 @@ func ParseModelCatalog(raw []byte) ([]RemoteModel, error) {
 		seen[model.ID] = struct{}{}
 		if model.Object == "" {
 			model.Object = "model"
+		}
+		if model.MaxInputTokens < 0 {
+			model.MaxInputTokens = 0
 		}
 		models = append(models, model)
 	}

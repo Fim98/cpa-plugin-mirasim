@@ -88,6 +88,38 @@ func TestExposedModelsIncludesClaudeAndGPTCatalogEntries(t *testing.T) {
 	}
 }
 
+func TestExposedModelsPreferTheServedContextWindow(t *testing.T) {
+	models := exposedModels([]mirasim.RemoteModel{
+		{ID: "gpt-6-astra", MaxInputTokens: 1050000},
+		{ID: "claude-sonnet-5", MaxInputTokens: 400000},
+		{ID: "gpt-5.6-sol"},
+	})
+	if models[0].ContextLength != 1050000 || models[0].InputTokenLimit != 1050000 {
+		t.Fatalf("static fallback outranked the account catalog: %#v", models[0])
+	}
+	// A smaller served window must shrink the published one, and take the
+	// [1m] selector with it.
+	if models[1].ContextLength != 400000 {
+		t.Fatalf("served context window was ignored: %#v", models[1])
+	}
+	if aliases := withLongContextAliases(models); len(aliases) != 3 {
+		t.Fatalf("a 400k model was still offered a [1m] selector: %#v", aliases)
+	}
+	if models[2].ContextLength != 872000 {
+		t.Fatalf("missing context window erased static metadata: %#v", models[2])
+	}
+}
+
+func TestRosterOverridesTheServedContextWindow(t *testing.T) {
+	models := exposedModels([]mirasim.RemoteModel{{ID: "gpt-6-astra", MaxInputTokens: 872000}})
+	applyRoster(models, mirasim.ModelRoster{Version: "live", Agents: map[string][]mirasim.ModelSpec{
+		"codex": {{ID: "gpt-6-astra", ContextWindow: 1050000}},
+	}})
+	if models[0].ContextLength != 1050000 || models[0].InputTokenLimit != 1050000 {
+		t.Fatalf("signed roster did not win: %#v", models[0])
+	}
+}
+
 func TestModelInfoPreservesLiveIdentityAndAddsKnownCapabilities(t *testing.T) {
 	model := modelInfo("gpt-5.6-sol", "custom-model", 42, "relay-owner")
 	if model.Object != "custom-model" || model.Created != 42 || model.OwnedBy != "relay-owner" {
