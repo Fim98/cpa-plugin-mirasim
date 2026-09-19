@@ -178,9 +178,17 @@ func (c *Client) relayMetadataLocked(ctx context.Context, requestPath string) (m
 		}
 		c.sessionID = "mirasim_" + sessionID
 	}
+	// Every relay call the official client makes carries its own identifier, so
+	// the service can correlate one attempt rather than a whole session. A
+	// retry is a new call and gets a new one.
+	callID, errCall := randomUUID(rand.Reader)
+	if errCall != nil {
+		return nil, fmt.Errorf("generate Mirasim call ID: %w", errCall)
+	}
 	metadata := map[string]string{
 		headerMirasimSession: c.sessionID,
 		headerMirasimAgent:   relayAgent(requestPath),
+		headerMirasimCall:    callID,
 	}
 	if identity, ok := ctx.Value(requestIdentityKey{}).(requestIdentity); ok {
 		if identity.session != "" {

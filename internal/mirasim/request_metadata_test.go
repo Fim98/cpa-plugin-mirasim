@@ -14,6 +14,7 @@ func TestRelayOptionsAreSignedAndCannotBeOverridden(t *testing.T) {
 	off := false
 	client := NewPool(RelayOptions{Collect: &off, Locale: "zh-CN"}).Client(storage)
 	var sessions []string
+	var calls []string
 	host := fakeHostClient{do: func(_ context.Context, r pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
 		u, _ := url.Parse(r.URL)
 		if u.Path == sessionPath {
@@ -24,9 +25,10 @@ func TestRelayOptionsAreSignedAndCannotBeOverridden(t *testing.T) {
 		if m["x-mirasim-collect"] != "off" || m["x-mirasim-locale"] != "zh-CN" || m["x-mirasim-account"] != "acct_42" || m["x-mirasim-turn"] != "turn-a" {
 			t.Fatalf("metadata=%+v", m)
 		}
-		if m[headerMirasimCall] != "" {
-			t.Fatal("obsolete per-call metadata survived")
+		if m[headerMirasimCall] == "" {
+			t.Fatalf("relay call was not identified: %+v", m)
 		}
+		calls = append(calls, m[headerMirasimCall])
 		sessions = append(sessions, m[headerMirasimSession])
 		return pluginapi.HTTPResponse{StatusCode: 200}, nil
 	}}
@@ -39,6 +41,10 @@ func TestRelayOptionsAreSignedAndCannotBeOverridden(t *testing.T) {
 	}
 	if sessions[0] != sessions[1] || sessions[0] == sessions[2] {
 		t.Fatal("session association was lost")
+	}
+	// Two calls in one session still have to be told apart.
+	if calls[0] == calls[1] || calls[1] == calls[2] || calls[0] == calls[2] {
+		t.Fatalf("relay calls shared an identifier: %#v", calls)
 	}
 	if safeMetadata("bad\nheader") != "" {
 		t.Fatal("control character accepted")
