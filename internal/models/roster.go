@@ -36,7 +36,7 @@ func applyRoster(models []pluginapi.ModelInfo, roster mirasim.ModelRoster) {
 		for _, level := range spec.Effort {
 			level = strings.ToLower(strings.TrimSpace(level))
 			switch level {
-			case "low", "medium", "high", "xhigh", "max":
+			case "low", "medium", "high", "xhigh", "max", "ultra":
 				if !seen[level] {
 					levels = append(levels, level)
 					seen[level] = true

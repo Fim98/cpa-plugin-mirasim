@@ -15,6 +15,10 @@ import (
 const (
 	wireClaude = "claude"
 	wireCodex  = "codex"
+	// workflowEffort is the official client's top rung. It is not a distinct
+	// upstream effort: the client sends max and layers a multi-turn workflow on
+	// top of it.
+	workflowEffort = "ultra"
 )
 
 // ModelShape selects the Claude thinking form a model accepts upstream. The
@@ -129,19 +133,13 @@ func ApplyForWire(body []byte, model, wire string, config pluginapi.ThinkingConf
 // ApplyForWireWithShape applies a canonical thinking configuration using the
 // upstream thinking form the account's signed roster reports for the model.
 func ApplyForWireWithShape(body []byte, model, wire string, config pluginapi.ThinkingConfig, shape ModelShape) ([]byte, error) {
-	body = validBody(body)
+	body = NormalizeWorkflowRequest(validBody(body))
 	config = normalizeConfig(config)
-	if config.Level == "ultra" {
-		return nil, workflowError()
-	}
-	if err := ValidateWorkflowRequest(body, model); err != nil {
-		return nil, err
-	}
 	switch strings.ToLower(strings.TrimSpace(wire)) {
 	case wireClaude:
 		return applyClaude(body, model, config, shape)
 	case wireCodex, "openai-response":
-		return applyCodex(body, config), nil
+		return applyCodex(body, config)
 	default:
 		return append([]byte(nil), body...), nil
 	}
@@ -178,12 +176,8 @@ func claudeBodyConfig(body []byte, shape ModelShape) (pluginapi.ThinkingConfig, 
 	if !ok || config.Mode != "budget" || !adaptiveClaude(shape) {
 		return config, ok
 	}
-	level := budgetToLevel(config.Budget)
-	if level == "minimal" {
-		// The effort ladder this plugin publishes starts at low.
-		level = "low"
-	}
-	if !isAdaptiveClaudeEffort(level) {
+	level := relayEffortForBudget(config.Budget)
+	if !isRelayEffort(level) {
 		return pluginapi.ThinkingConfig{}, false
 	}
 	return pluginapi.ThinkingConfig{Mode: "level", Level: level}, true
@@ -211,25 +205,27 @@ func claudeBodyThinking(body []byte) (pluginapi.ThinkingConfig, bool) {
 	return pluginapi.ThinkingConfig{}, false
 }
 
-func workflowError() error {
-	return &ConfigError{Code: "mirasim_client_workflow_required", Message: "Mirasim ultra requires the official client's workflow orchestration; use max for a single API request"}
-}
-
-func ValidateWorkflowRequest(body []byte, model string) error {
-	if ParseModel(model).Config.Level == "ultra" {
-		return workflowError()
-	}
+// NormalizeWorkflowRequest rewrites ultra into the effort the official client
+// actually puts on the wire for it. Ultra is max plus a multi-turn workflow the
+// client orchestrates around the request; CPA executes one request, so the
+// orchestration cannot be reproduced, but the single request this plugin sends
+// is byte-for-byte the one the official client sends. Refusing ultra instead
+// would withhold an effort the relay accepts.
+func NormalizeWorkflowRequest(body []byte) []byte {
 	for _, path := range []string{"reasoning.effort", "reasoning_effort", "output_config.effort"} {
-		if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, path).String()), "ultra") {
-			return workflowError()
+		if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, path).String()), workflowEffort) {
+			body = setString(body, path, "max")
 		}
 	}
-	return nil
+	return body
 }
 
 func normalizeConfig(config pluginapi.ThinkingConfig) pluginapi.ThinkingConfig {
 	config.Mode = strings.ToLower(strings.TrimSpace(config.Mode))
 	config.Level = strings.ToLower(strings.TrimSpace(config.Level))
+	if config.Level == workflowEffort {
+		config.Level = "max"
+	}
 	if config.Mode == "budget" && config.Budget <= 0 {
 		config.Mode = "none"
 		config.Budget = 0
@@ -254,10 +250,10 @@ func applyClaude(body []byte, model string, config pluginapi.ThinkingConfig, sha
 		return applyManualClaude(body, 1024)
 	case "level":
 		if adaptive {
-			if !isAdaptiveClaudeEffort(config.Level) {
+			if !isRelayEffort(config.Level) {
 				return body, &ConfigError{
 					Code:    "mirasim_claude_effort_invalid",
-					Message: fmt.Sprintf("unsupported Claude thinking effort %q for %s", config.Level, model),
+					Message: fmt.Sprintf("unsupported Claude thinking effort %q for %s; %s", config.Level, model, effortLadder),
 				}
 			}
 			body = setString(body, "thinking.type", "adaptive")
@@ -266,7 +262,7 @@ func applyClaude(body []byte, model string, config pluginapi.ThinkingConfig, sha
 		}
 		budget, okBudget := levelToBudget(config.Level)
 		if !okBudget {
-			return body, &ConfigError{Code: "mirasim_thinking_level_invalid", Message: fmt.Sprintf("unsupported thinking level %q", config.Level)}
+			return body, &ConfigError{Code: "mirasim_thinking_level_invalid", Message: fmt.Sprintf("unsupported thinking level %q; %s", config.Level, effortLadder)}
 		}
 		return applyManualClaude(body, budget)
 	case "budget":
@@ -309,7 +305,7 @@ func deleteClaudeEffort(body []byte) []byte {
 	return body
 }
 
-func applyCodex(body []byte, config pluginapi.ThinkingConfig) []byte {
+func applyCodex(body []byte, config pluginapi.ThinkingConfig) ([]byte, error) {
 	effort := ""
 	switch config.Mode {
 	case "none":
@@ -317,15 +313,21 @@ func applyCodex(body []byte, config pluginapi.ThinkingConfig) []byte {
 	case "auto":
 		effort = "auto"
 	case "level":
+		// The Responses mount takes the same ladder the Messages mount does, so
+		// an effort refused on one wire is refused on the other rather than
+		// forwarded for the relay to reject.
+		if !isRelayEffort(config.Level) {
+			return body, &ConfigError{Code: "mirasim_thinking_level_invalid", Message: fmt.Sprintf("unsupported thinking level %q; %s", config.Level, effortLadder)}
+		}
 		effort = config.Level
 	case "budget":
-		effort = budgetToLevel(config.Budget)
+		effort = relayEffortForBudget(config.Budget)
 	}
 	if effort == "" {
-		return body
+		return body, nil
 	}
 	body = setString(body, "reasoning.effort", effort)
-	return deletePath(body, "reasoning_effort")
+	return deletePath(body, "reasoning_effort"), nil
 }
 
 // adaptiveClaude reports whether the model takes the effort form. Every Claude
@@ -337,7 +339,14 @@ func adaptiveClaude(shape ModelShape) bool {
 	return shape != ShapeBudget
 }
 
-func isAdaptiveClaudeEffort(level string) bool {
+// effortLadder names what the relay accepts, for an error a caller can act on.
+const effortLadder = "Mirasim accepts low, medium, high, xhigh, max and ultra"
+
+// isRelayEffort reports membership of the ladder the Claude and Responses
+// mounts share. The official client's wider list covers agents this plugin does
+// not speak for, so minimal and off are not on it; ultra is already folded into
+// max before this runs.
+func isRelayEffort(level string) bool {
 	switch level {
 	case "low", "medium", "high", "xhigh", "max":
 		return true
@@ -346,10 +355,18 @@ func isAdaptiveClaudeEffort(level string) bool {
 	}
 }
 
+// relayEffortForBudget maps a token budget onto the ladder, keeping the
+// smallest budgets on its bottom rung rather than below it.
+func relayEffortForBudget(budget int) string {
+	level := budgetToLevel(budget)
+	if level == "minimal" {
+		return "low"
+	}
+	return level
+}
+
 func levelToBudget(level string) (int, bool) {
 	switch level {
-	case "minimal":
-		return 512, true
 	case "low":
 		return 1024, true
 	case "medium":

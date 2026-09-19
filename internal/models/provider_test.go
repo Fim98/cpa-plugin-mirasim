@@ -51,13 +51,13 @@ func TestStaticModelsExposeClaudeAndGPTFallback(t *testing.T) {
 		t.Fatalf("Astra metadata=%+v", astra)
 	}
 	sonnet := byID["claude-sonnet-5"]
-	if sonnet.ContextLength != 1000000 || sonnet.MaxCompletionTokens != 128000 || sonnet.Thinking == nil || !sonnet.Thinking.DynamicAllowed || !sonnet.Thinking.ZeroAllowed || len(sonnet.Thinking.Levels) != 5 || sonnet.Thinking.Levels[0] != "low" || sonnet.Thinking.Levels[4] != "max" {
+	if sonnet.ContextLength != 1000000 || sonnet.MaxCompletionTokens != 128000 || sonnet.Thinking == nil || !sonnet.Thinking.DynamicAllowed || !sonnet.Thinking.ZeroAllowed || len(sonnet.Thinking.Levels) != 6 || sonnet.Thinking.Levels[0] != "low" || sonnet.Thinking.Levels[5] != "ultra" {
 		t.Fatalf("Claude Sonnet 5 metadata = %#v", sonnet)
 	}
 	// Every Claude model the relay publishes takes the effort form, so none of
 	// them advertise a token budget until a signed roster says otherwise.
 	haiku := byID["claude-haiku-4-5"]
-	if haiku.ContextLength != 200000 || haiku.MaxCompletionTokens != 64000 || haiku.Thinking == nil || haiku.Thinking.Min != 0 || haiku.Thinking.Max != 0 || !haiku.Thinking.DynamicAllowed || len(haiku.Thinking.Levels) != 5 {
+	if haiku.ContextLength != 200000 || haiku.MaxCompletionTokens != 64000 || haiku.Thinking == nil || haiku.Thinking.Min != 0 || haiku.Thinking.Max != 0 || !haiku.Thinking.DynamicAllowed || len(haiku.Thinking.Levels) != 6 {
 		t.Fatalf("Claude Haiku 4.5 metadata = %#v", haiku)
 	}
 	fable := byID["claude-fable-5-1"]
@@ -128,7 +128,7 @@ func TestModelInfoPreservesLiveIdentityAndAddsKnownCapabilities(t *testing.T) {
 	if model.Type != "openai" || model.DisplayName != "GPT 5.6 Sol" || model.ContextLength != 872000 || model.MaxCompletionTokens != 128000 || model.Thinking == nil {
 		t.Fatalf("known GPT metadata was not enriched: %#v", model)
 	}
-	wantLevels := []string{"low", "medium", "high", "xhigh", "max"}
+	wantLevels := []string{"low", "medium", "high", "xhigh", "max", "ultra"}
 	if len(model.Thinking.Levels) != len(wantLevels) {
 		t.Fatalf("thinking levels = %#v", model.Thinking.Levels)
 	}

@@ -9,22 +9,44 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestUltraCannotSilentlyBecomeOrdinaryCompletion(t *testing.T) {
-	for _, model := range []string{"gpt-6-astra(ultra)", "claude-sonnet-5(ultra)"} {
-		parsed := ParseModel(model)
-		_, err := ApplyForWire([]byte("{}"), parsed.ModelName, "codex", parsed.Config)
-		var e *ConfigError
-		if !errors.As(err, &e) || e.Code != "mirasim_client_workflow_required" {
-			t.Fatalf("%s: %v", model, err)
-		}
+func TestUltraSendsWhatTheOfficialClientSendsForIt(t *testing.T) {
+	// Ultra is max plus client-side orchestration; the request itself is a max
+	// request, so it must reach the relay rather than be refused.
+	codex := ParseModel("gpt-6-astra(ultra)")
+	out, errCodex := ApplyForWire([]byte("{}"), codex.ModelName, wireCodex, codex.Config)
+	if errCodex != nil || gjson.GetBytes(out, "reasoning.effort").String() != "max" {
+		t.Fatalf("codex body = %s, error = %v", out, errCodex)
+	}
+	claude := ParseModel("claude-sonnet-5(ultra)")
+	out, errClaude := ApplyForWire([]byte(`{"max_tokens":4096}`), claude.ModelName, wireClaude, claude.Config)
+	if errClaude != nil || gjson.GetBytes(out, "output_config.effort").String() != "max" {
+		t.Fatalf("claude body = %s, error = %v", out, errClaude)
 	}
 	for _, body := range []string{`{"reasoning":{"effort":"ultra"}}`, `{"output_config":{"effort":"ultra"}}`, `{"reasoning_effort":"ultra"}`} {
-		if ValidateWorkflowRequest([]byte(body), "gpt-6-astra") == nil {
-			t.Fatal("workflow request accepted")
+		normalized := NormalizeWorkflowRequest([]byte(body))
+		if gjson.GetBytes(normalized, "reasoning.effort").String() == "ultra" ||
+			gjson.GetBytes(normalized, "output_config.effort").String() == "ultra" ||
+			gjson.GetBytes(normalized, "reasoning_effort").String() == "ultra" {
+			t.Fatalf("ultra survived onto the wire: %s", normalized)
 		}
 	}
-	if ValidateWorkflowRequest([]byte(`{"reasoning":{"effort":"max"}}`), "gpt-6-astra") != nil {
-		t.Fatal("max rejected")
+	if got := NormalizeWorkflowRequest([]byte(`{"reasoning":{"effort":"max"}}`)); gjson.GetBytes(got, "reasoning.effort").String() != "max" {
+		t.Fatalf("max rewritten: %s", got)
+	}
+}
+
+func TestBothWiresRefuseTheSameEffortsOffTheLadder(t *testing.T) {
+	for _, wire := range []string{wireClaude, wireCodex} {
+		_, errApply := ApplyForWire([]byte(`{"max_tokens":4096}`), "claude-sonnet-5", wire, pluginapi.ThinkingConfig{Mode: "level", Level: "minimal"})
+		var configErr *ConfigError
+		if !errors.As(errApply, &configErr) || configErr.StatusCode() != 400 {
+			t.Fatalf("%s accepted minimal: %v", wire, errApply)
+		}
+	}
+	// A budget below the bottom rung still maps onto it rather than off it.
+	out, errBudget := ApplyForWire([]byte(`{"model":"gpt-5.6-sol"}`), "gpt-5.6-sol", wireCodex, pluginapi.ThinkingConfig{Mode: "budget", Budget: 256})
+	if errBudget != nil || gjson.GetBytes(out, "reasoning.effort").String() != "low" {
+		t.Fatalf("body = %s, error = %v", out, errBudget)
 	}
 }
 

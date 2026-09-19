@@ -240,14 +240,14 @@ func claudeShape(client *mirasim.Client, model string) thinkingpkg.ModelShape {
 }
 
 func buildProviderRequest(req pluginapi.ExecutorRequest, stream bool, shape thinkingpkg.ModelShape) ([]byte, providerRoute, error) {
-	if err := thinkingpkg.ValidateWorkflowRequest(req.Payload, req.Model); err != nil {
-		return nil, providerRoute{}, err
-	}
 	parsedModel := thinkingpkg.ParseModel(req.Model)
 	model := parsedModel.ModelName
 	source := sourceFormat(req)
 	wire := selectWireFormat(model, source)
-	body, errTranslate := translateRequest(source, wire, model, req.Payload, stream)
+	// Fold ultra into max before translation so a transformer that does not
+	// recognize it cannot drop the caller's effort on the way through.
+	payload := thinkingpkg.NormalizeWorkflowRequest(req.Payload)
+	body, errTranslate := translateRequest(source, wire, model, payload, stream)
 	if errTranslate != nil {
 		return nil, providerRoute{}, errTranslate
 	}
@@ -255,6 +255,7 @@ func buildProviderRequest(req pluginapi.ExecutorRequest, stream bool, shape thin
 	if errNormalize != nil {
 		return nil, providerRoute{}, errNormalize
 	}
+	body = thinkingpkg.NormalizeWorkflowRequest(body)
 	if parsedModel.HasConfig {
 		body, errNormalize = thinkingpkg.ApplyForWireWithShape(body, model, wire.String(), parsedModel.Config, shape)
 		if errNormalize != nil {
@@ -501,9 +502,7 @@ func upstreamHeaders(source http.Header, wire sdktranslator.Format) http.Header 
 }
 
 func normalizeHTTPRequestBody(body []byte, model string, wire sdktranslator.Format, shape thinkingpkg.ModelShape) ([]byte, error) {
-	if err := thinkingpkg.ValidateWorkflowRequest(body, model); err != nil {
-		return nil, err
-	}
+	body = thinkingpkg.NormalizeWorkflowRequest(body)
 	var payload map[string]any
 	if errDecode := json.Unmarshal(body, &payload); errDecode != nil {
 		return nil, fmt.Errorf("decode Mirasim HTTP request: %w", errDecode)

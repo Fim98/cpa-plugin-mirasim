@@ -242,12 +242,15 @@ func budgetRelayThinking() *pluginapi.ThinkingSupport {
 	return &pluginapi.ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, DynamicAllowed: true, Levels: claudeEffortLevels()}
 }
 
+// claudeEffortLevels is the ladder both relay mounts take. Ultra is on it
+// because the relay accepts the request it produces; the surrounding workflow
+// the official client runs for ultra is a client behaviour, not an effort.
 func claudeEffortLevels() []string {
-	return []string{"low", "medium", "high", "xhigh", "max"}
+	return []string{"low", "medium", "high", "xhigh", "max", "ultra"}
 }
 
 func codexThinking() *pluginapi.ThinkingSupport {
-	return &pluginapi.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh", "max"}}
+	return &pluginapi.ThinkingSupport{Levels: claudeEffortLevels()}
 }
 
 func cloneThinking(value *pluginapi.ThinkingSupport) *pluginapi.ThinkingSupport {

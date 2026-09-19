@@ -82,7 +82,9 @@ The roster's `adaptive` flag is also the only thing that selects a Claude model'
 
 Claude models with a known context of at least one million tokens also publish `[1m]` selector aliases. For example, `claude-sonnet-5[1m](high)` strips both selectors before forwarding the real model ID, retains high effort, and adds `context-1m-2025-08-07` without losing other beta tokens.
 
-The official client's `ultra` means `max` plus client workflow orchestration. CPA's single-request executor cannot run that workflow. Explicit `ultra` requests return HTTP 400 with an actionable message instead of silently running at another effort; use `max` for a single API request.
+The official client's `ultra` means `max` plus client workflow orchestration. The request it puts on the wire is a `max` request, so `ultra` is accepted and sent as `max` wherever it arrives — model suffix, `output_config.effort`, or `reasoning.effort`. CPA's single-request executor still cannot run the surrounding multi-turn workflow, so `ultra` and `max` produce the same single API call here.
+
+Both mounts share one effort ladder: `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`. An effort outside it, including `minimal` and `off`, returns HTTP 400 naming the ladder rather than being forwarded for the relay to reject. The official client's wider list covers agents this plugin does not speak for.
 
 ## Codex compaction
 
