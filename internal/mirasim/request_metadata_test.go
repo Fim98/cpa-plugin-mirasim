@@ -51,6 +51,41 @@ func TestRelayOptionsAreSignedAndCannotBeOverridden(t *testing.T) {
 	}
 }
 
+func TestControlPlaneRoutesReportNothingAboutTheSession(t *testing.T) {
+	// Listing models, reading limits and fetching the roster describe the
+	// account, not a conversation. The official client signs them with empty
+	// metadata and seals nothing, so a configured locale or collection signal
+	// has no request to ride along on.
+	storage, pub, _ := newTestStorage(t, agentAccountJWT("acct_42"))
+	off := false
+	client := NewPool(RelayOptions{Collect: &off, Locale: "zh-CN"}).Client(storage)
+	host := fakeHostClient{do: func(_ context.Context, r pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		u, _ := url.Parse(r.URL)
+		if u.Path == sessionPath {
+			return pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"ticket":"t","expiresIn":900}`)}, nil
+		}
+		assertControlPlaneRequest(t, pub, r, "t")
+		switch u.Path {
+		case modelsPath:
+			return pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"claude-sonnet-5"}]}`)}, nil
+		case limitsPath:
+			return pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"windows":[]}`)}, nil
+		default:
+			return pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"version":"v2","agents":{"codex":[{"id":"gpt-6-astra","contextWindow":1050000}]}}`)}, nil
+		}
+	}}
+	ctx := WithRequestIdentity(context.Background(), map[string]any{"execution_session_id": "one", "mirasim_turn_id": "turn-a"})
+	if _, err := client.ListModels(ctx, host); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.FetchQuota(ctx, host); err != nil {
+		t.Fatal(err)
+	}
+	if roster := client.ModelRoster(ctx, host); roster.Version != "v2" {
+		t.Fatalf("roster = %+v", roster)
+	}
+}
+
 func TestRelayOmitsTheAccountHeaderWhenTheTokenNamesNoSubAccount(t *testing.T) {
 	// A plain user token carries sub but no account_id. The official client
 	// sends nothing in that case, and the user ID is not a stand-in for it.

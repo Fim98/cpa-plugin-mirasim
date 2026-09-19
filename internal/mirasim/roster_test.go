@@ -10,7 +10,7 @@ import (
 )
 
 func TestRosterCacheFallbackAndIsolation(t *testing.T) {
-	storage, pub, relayKey := newTestStorage(t, futureJWT())
+	storage, pub, _ := newTestStorage(t, futureJWT())
 	client := NewClient(storage)
 	now := time.Now()
 	client.now = func() time.Time { return now }
@@ -24,7 +24,7 @@ func TestRosterCacheFallbackAndIsolation(t *testing.T) {
 			t.Fatalf("unexpected request %s", u.Path)
 		}
 		calls++
-		assertSealedRelayRequest(t, pub, relayKey, r, "t")
+		assertControlPlaneRequest(t, pub, r, "t")
 		return pluginapi.HTTPResponse{StatusCode: status, Body: []byte(`{"version":"v2","agents":{"codex":[{"id":"gpt-6-astra","contextWindow":1050000,"maxOutput":128000,"effort":["high","max"]},{"id":"bad","contextWindow":1}],"claude":[{"id":"claude-bad","contextWindow":0}]}}`)}, nil
 	}}
 	first := client.ModelRoster(context.Background(), host)

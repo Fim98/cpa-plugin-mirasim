@@ -48,7 +48,7 @@ func (f fakeHostClient) DoStream(ctx context.Context, req pluginapi.HTTPRequest)
 
 func TestListModelsSignsRequestsAndCapturesQuota(t *testing.T) {
 	accessToken := futureJWT()
-	storage, publicKey, relayPrivate := newTestStorage(t, accessToken)
+	storage, publicKey, _ := newTestStorage(t, accessToken)
 	client := NewClient(storage)
 	calls := 0
 	host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
@@ -69,7 +69,7 @@ func TestListModelsSignsRequestsAndCapturesQuota(t *testing.T) {
 				Body:       []byte(`{"ticket":"device-ticket","expiresIn":900}`),
 			}, nil
 		case modelsPath:
-			assertSealedRelayRequest(t, publicKey, relayPrivate, req, "device-ticket")
+			assertControlPlaneRequest(t, publicKey, req, "device-ticket")
 			if req.Headers.Get("Authorization") != "Bearer device-ticket" {
 				t.Errorf("models authorization = %q", req.Headers.Get("Authorization"))
 			}
@@ -117,7 +117,7 @@ func TestListModelsSignsRequestsAndCapturesQuota(t *testing.T) {
 
 func TestFetchQuotaUsesStructuredLimits(t *testing.T) {
 	accessToken := futureJWT()
-	storage, publicKey, relayPrivate := newTestStorage(t, accessToken)
+	storage, publicKey, _ := newTestStorage(t, accessToken)
 	client := NewClient(storage)
 	calls := 0
 	host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
@@ -128,7 +128,7 @@ func TestFetchQuotaUsesStructuredLimits(t *testing.T) {
 			assertDeviceSessionRequest(t, publicKey, req, accessToken)
 			return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"ticket":"device-ticket","expiresIn":900}`)}, nil
 		case limitsPath:
-			assertSealedRelayRequest(t, publicKey, relayPrivate, req, "device-ticket")
+			assertControlPlaneRequest(t, publicKey, req, "device-ticket")
 			if req.Method != http.MethodGet || req.Headers.Get(quotaProbeHeader) != "usage" {
 				t.Errorf("limits request = %s, probe = %q", req.Method, req.Headers.Get(quotaProbeHeader))
 			}
@@ -236,7 +236,7 @@ func TestValidateRemoteUsesStandaloneClientForCLILogin(t *testing.T) {
 
 func TestListModelsDoesNotReuseStaleQuotaWhenHeadersDisappear(t *testing.T) {
 	accessToken := futureJWT()
-	storage, publicKey, relayPrivate := newTestStorage(t, accessToken)
+	storage, publicKey, _ := newTestStorage(t, accessToken)
 	client := NewClient(storage)
 	modelCalls := 0
 	host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
@@ -245,7 +245,7 @@ func TestListModelsDoesNotReuseStaleQuotaWhenHeadersDisappear(t *testing.T) {
 			assertDeviceSessionRequest(t, publicKey, req, accessToken)
 			return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"ticket":"device-ticket","expiresIn":900}`)}, nil
 		}
-		assertSealedRelayRequest(t, publicKey, relayPrivate, req, "device-ticket")
+		assertControlPlaneRequest(t, publicKey, req, "device-ticket")
 		modelCalls++
 		headers := make(http.Header)
 		if modelCalls == 1 {
@@ -800,6 +800,29 @@ func assertDeviceSessionRequest(t *testing.T, publicKey ed25519.PublicKey, req p
 		headerMirasimTimestamp: req.Headers.Get(headerMirasimTimestamp),
 		headerMirasimNonce:     req.Headers.Get(headerMirasimNonce),
 		headerMirasimSignature: req.Headers.Get(headerMirasimSignature),
+	}
+	assertV2Signature(t, publicKey, req, credential, nil, signed)
+}
+
+// assertControlPlaneRequest checks a route that describes the account rather
+// than a conversation: signed with empty metadata, unsealed, and carrying no
+// session, agent, sub-account, locale or collection signal.
+func assertControlPlaneRequest(t *testing.T, publicKey ed25519.PublicKey, req pluginapi.HTTPRequest, credential string) {
+	t.Helper()
+	if req.Headers.Get(headerMirasimEncryptedMetadata) != "" {
+		t.Error("control-plane request sealed metadata the official client does not send")
+	}
+	signed := make(map[string]string)
+	for name := range req.Headers {
+		lowerName := strings.ToLower(name)
+		if !strings.HasPrefix(lowerName, "x-mirasim-") || lowerName == quotaProbeHeader || lowerName == headerMirasimClient {
+			continue
+		}
+		if _, isSignature := signatureHeaderNames[lowerName]; !isSignature {
+			t.Errorf("control-plane request reported %s", name)
+			continue
+		}
+		signed[lowerName] = req.Headers.Get(name)
 	}
 	assertV2Signature(t, publicKey, req, credential, nil, signed)
 }

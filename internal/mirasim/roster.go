@@ -117,7 +117,7 @@ func (c *Client) ModelRoster(ctx context.Context, host pluginapi.HostHTTPClient)
 	c.rosterNextCheck = now.Add(time.Minute)
 	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	resp, err := c.Do(probeCtx, host, http.MethodGet, rosterPath, nil, nil, nil)
+	resp, err := c.doControl(probeCtx, host, http.MethodGet, rosterPath, nil, nil, nil, nil)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return c.roster.Clone()
 	}

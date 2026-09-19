@@ -270,12 +270,21 @@ func (c *Client) RefreshForHost(ctx context.Context, proxyURL string) (time.Time
 }
 
 func (c *Client) Do(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers http.Header, body []byte) (pluginapi.HTTPResponse, error) {
-	return c.do(ctx, client, method, requestPath, query, headers, nil, body)
+	return c.do(ctx, client, method, requestPath, query, headers, nil, body, false)
+}
+
+// doControl issues a control-plane request the way the official client does:
+// signed with empty metadata and not sealed. These routes describe the account
+// rather than a conversation, so they report no session, agent, sub-account,
+// locale or collection signal, and an operator who turned collection off does
+// not have one attached to them here.
+func (c *Client) doControl(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers, providerHeaders http.Header, body []byte) (pluginapi.HTTPResponse, error) {
+	return c.do(ctx, client, method, requestPath, query, headers, providerHeaders, body, true)
 }
 
 // do accepts provider-owned headers separately so untrusted downstream
 // x-mirasim-* values can remain blocked while internal probes are forwarded.
-func (c *Client) do(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers, providerHeaders http.Header, body []byte) (pluginapi.HTTPResponse, error) {
+func (c *Client) do(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers, providerHeaders http.Header, body []byte, controlPlane bool) (pluginapi.HTTPResponse, error) {
 	if client == nil {
 		return pluginapi.HTTPResponse{}, fmt.Errorf("host HTTP client is required")
 	}
@@ -284,7 +293,7 @@ func (c *Client) do(ctx context.Context, client pluginapi.HostHTTPClient, method
 		return pluginapi.HTTPResponse{}, errURL
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		authHeaders, errAuth := c.authHeaders(ctx, client, method, signaturePath, body, attempt > 0)
+		authHeaders, errAuth := c.authHeaders(ctx, client, method, signaturePath, body, attempt > 0, controlPlane)
 		if errAuth != nil {
 			return pluginapi.HTTPResponse{}, errAuth
 		}
@@ -321,7 +330,7 @@ func (c *Client) DoStream(ctx context.Context, client pluginapi.HostHTTPClient, 
 		return pluginapi.HTTPStreamResponse{}, errURL
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		authHeaders, errAuth := c.authHeaders(ctx, client, method, signaturePath, body, attempt > 0)
+		authHeaders, errAuth := c.authHeaders(ctx, client, method, signaturePath, body, attempt > 0, false)
 		if errAuth != nil {
 			return pluginapi.HTTPStreamResponse{}, errAuth
 		}
@@ -348,9 +357,9 @@ func (c *Client) DoStream(ctx context.Context, client pluginapi.HostHTTPClient, 
 }
 
 func (c *Client) ListModels(ctx context.Context, client pluginapi.HostHTTPClient) (Catalog, error) {
-	resp, errDo := c.Do(ctx, client, http.MethodGet, modelsPath, nil, http.Header{
+	resp, errDo := c.doControl(ctx, client, http.MethodGet, modelsPath, nil, http.Header{
 		"Accept": []string{"application/json"},
-	}, nil)
+	}, nil, nil)
 	if errDo != nil {
 		return Catalog{}, errDo
 	}
@@ -377,7 +386,7 @@ func (c *Client) ListModels(ctx context.Context, client pluginapi.HostHTTPClient
 // trigger a billable inference request.
 func (c *Client) FetchQuota(ctx context.Context, client pluginapi.HostHTTPClient) (QuotaSnapshot, error) {
 	providerHeaders := http.Header{quotaProbeHeader: []string{"usage"}}
-	resp, errDo := c.do(ctx, client, http.MethodGet, limitsPath, nil, http.Header{
+	resp, errDo := c.doControl(ctx, client, http.MethodGet, limitsPath, nil, http.Header{
 		"Accept": []string{"application/json"},
 	}, providerHeaders, nil)
 	if errDo != nil {
@@ -411,7 +420,7 @@ func (c *Client) replaceQuota(quota QuotaSnapshot) {
 	c.mu.Unlock()
 }
 
-func (c *Client) authHeaders(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, body []byte, forceTicket bool) (http.Header, error) {
+func (c *Client) authHeaders(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, body []byte, forceTicket, controlPlane bool) (http.Header, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if errLoad := c.loadLocked(); errLoad != nil {
@@ -429,15 +438,22 @@ func (c *Client) authHeaders(ctx context.Context, client pluginapi.HostHTTPClien
 	if errTicket != nil {
 		return nil, errTicket
 	}
-	metadata, errMetadata := c.relayMetadataLocked(ctx, requestPath)
-	if errMetadata != nil {
-		return nil, errMetadata
+	var metadata map[string]string
+	if !controlPlane {
+		relayMetadata, errMetadata := c.relayMetadataLocked(ctx, requestPath)
+		if errMetadata != nil {
+			return nil, errMetadata
+		}
+		metadata = relayMetadata
 	}
 	headers, errSign := c.signatureHeadersLocked(method, requestPath, ticket, metadata, body)
 	if errSign != nil {
 		return nil, errSign
 	}
 	headers.Set("Authorization", "Bearer "+ticket)
+	if controlPlane {
+		return headers, nil
+	}
 	if errSeal := sealRelayHeaders(headers, method, requestPath); errSeal != nil {
 		return nil, errSeal
 	}
