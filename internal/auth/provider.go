@@ -98,6 +98,8 @@ func (p *Provider) RegisterCommandLine(context.Context, pluginapi.CommandLineReg
 	return pluginapi.CommandLineRegistrationResponse{Flags: []pluginapi.CommandLineFlag{
 		{Name: "mirasim-login", Usage: "Run Mirasim browser OAuth login.", Type: "bool", DefaultValue: "false"},
 		{Name: "mirasim-login-provider", Usage: "Mirasim OAuth provider ID from /auth/oauth/providers (default github).", Type: "string", DefaultValue: "github"},
+		{Name: "mirasim-login-email", Usage: "Sign in with a code mailed to this Mirasim account address instead of an OAuth provider.", Type: "string"},
+		{Name: "mirasim-login-code", Usage: "Mirasim sign-in code, to complete an email login without a prompt.", Type: "string"},
 		{Name: "mirasim-relay-url", Usage: "Mirasim relay base URL.", Type: "string"},
 		{Name: "mirasim-admin-url", Usage: "Mirasim authentication service base URL.", Type: "string"},
 		{Name: "mirasim-client-version", Usage: "Value sent in x-mirasim-client.", Type: "string"},
@@ -110,7 +112,14 @@ func (p *Provider) ExecuteCommandLine(ctx context.Context, req pluginapi.Command
 		return pluginapi.CommandLineExecutionResponse{}, nil
 	}
 	settings := p.settingsFromFlags(req.Flags)
-	auth, stdout, errLogin := p.runLocalLogin(ctx, settings, flagString(req.Flags, "mirasim-login-provider"), req.Host.ProxyURL, flagBoolValue(req.Flags, "no-browser"))
+	var auth pluginapi.AuthData
+	var stdout []byte
+	var errLogin error
+	if email := flagString(req.Flags, "mirasim-login-email"); email != "" {
+		auth, stdout, errLogin = p.runEmailLogin(ctx, settings, email, flagString(req.Flags, "mirasim-login-code"), req.Host.ProxyURL)
+	} else {
+		auth, stdout, errLogin = p.runLocalLogin(ctx, settings, flagString(req.Flags, "mirasim-login-provider"), req.Host.ProxyURL, flagBoolValue(req.Flags, "no-browser"))
+	}
 	if errLogin != nil {
 		return pluginapi.CommandLineExecutionResponse{Stdout: stdout, Stderr: []byte(errLogin.Error() + "\n"), ExitCode: 1}, nil
 	}

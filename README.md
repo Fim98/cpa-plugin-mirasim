@@ -64,6 +64,16 @@ go build -o .\dist\mirasim-oauth-bridge.exe .\cmd\mirasim-oauth-bridge
 
 Set the remote plugin's `oauth-public-base-url` to `http://127.0.0.1:18317`, restart CPA, and repeat login with the bridge running. The bridge forwards only OAuth resource requests and restores the pending login state; it is needed only during login. Its optional `--dial-address <IP:port>` pins the upstream connection while retaining HTTPS hostname verification and bypassing environment proxies.
 
+## Email code login
+
+A Mirasim account with no OAuth provider bound to it cannot use any of the flows above. Sign it in with a mailed code instead:
+
+```powershell
+.\CLIProxyAPI.exe -config .\config.yaml --mirasim-login --mirasim-login-email you@example.com
+```
+
+Mirasim mails a code and the command prompts for it. Where no prompt can be answered, run the same command once to send the code, then again with `--mirasim-login-code <code>` to complete the login without a prompt. This is the CLI only: plugin resource routes are GET-only and carry no request body, so the browser page cannot accept a code. A response without a refresh token is refused rather than saved, because CPA cannot keep such a credential alive.
+
 ## Relay collection and metadata
 
 Set `collect: false` to send the official `x-mirasim-collect: off` signal inside signed/encrypted metadata. Omitted or true follows the relay default. `locale` is optional. Environment defaults are `MIRASIM_COLLECT` and `MIRASIM_LOCALE`; explicit YAML wins. This requests upstream behavior; it does not prove how the service retains data.

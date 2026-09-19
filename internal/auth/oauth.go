@@ -331,17 +331,37 @@ func joinPublicURL(base *url.URL, route string) string {
 	return joined.String()
 }
 
-func buildMirasimOAuthURL(adminURL, provider, callbackURL, state string) (string, error) {
+// adminBaseURL validates the configured authentication service origin. Every
+// route built against it, not just OAuth login, passes through here.
+func adminBaseURL(adminURL string) (*url.URL, error) {
 	base, errParse := url.Parse(strings.TrimRight(strings.TrimSpace(adminURL), "/"))
 	if errParse != nil || base.Scheme == "" || base.Host == "" || base.User != nil || base.Opaque != "" || base.RawQuery != "" || base.Fragment != "" {
-		return "", fmt.Errorf("invalid Mirasim authentication service URL")
+		return nil, fmt.Errorf("invalid Mirasim authentication service URL")
 	}
 	base.Scheme = strings.ToLower(base.Scheme)
 	if base.Scheme != "http" && base.Scheme != "https" {
-		return "", fmt.Errorf("invalid Mirasim authentication service URL")
+		return nil, fmt.Errorf("invalid Mirasim authentication service URL")
 	}
 	if base.Scheme == "http" && !isLoopbackHost(base.Hostname()) {
-		return "", fmt.Errorf("Mirasim authentication service URL must use HTTPS unless it is loopback")
+		return nil, fmt.Errorf("Mirasim authentication service URL must use HTTPS unless it is loopback")
+	}
+	return base, nil
+}
+
+func adminEndpoint(adminURL, resource string) (string, error) {
+	base, errBase := adminBaseURL(adminURL)
+	if errBase != nil {
+		return "", errBase
+	}
+	base.Path = strings.TrimRight(base.Path, "/") + resource
+	base.RawPath = ""
+	return base.String(), nil
+}
+
+func buildMirasimOAuthURL(adminURL, provider, callbackURL, state string) (string, error) {
+	base, errBase := adminBaseURL(adminURL)
+	if errBase != nil {
+		return "", errBase
 	}
 	base.Path = strings.TrimRight(base.Path, "/") + "/auth/oauth/" + url.PathEscape(provider) + "/login"
 	base.RawPath = ""

@@ -24,7 +24,7 @@ func TestRegisterCommandLineDeclaresOAuthOnlyFlags(t *testing.T) {
 	for _, flag := range resp.Flags {
 		flags[flag.Name] = flag
 	}
-	for _, name := range []string{"mirasim-login", "mirasim-login-provider", "mirasim-relay-url", "mirasim-admin-url", "mirasim-client-version"} {
+	for _, name := range []string{"mirasim-login", "mirasim-login-provider", "mirasim-login-email", "mirasim-login-code", "mirasim-relay-url", "mirasim-admin-url", "mirasim-client-version"} {
 		if _, ok := flags[name]; !ok {
 			t.Fatalf("missing command-line flag %q", name)
 		}
