@@ -17,3 +17,19 @@ func TestRosterOverridesSpecWithoutAddingModels(t *testing.T) {
 		t.Fatal("missing spec erased static metadata")
 	}
 }
+
+func TestRosterPublishesOnlyTheThinkingFormTheModelAccepts(t *testing.T) {
+	models := exposedModels([]mirasim.RemoteModel{{ID: "claude-haiku-4-5"}, {ID: "claude-sonnet-5"}})
+	applyRoster(models, mirasim.ModelRoster{Version: "live", Agents: map[string][]mirasim.ModelSpec{
+		"claude": {
+			{ID: "claude-haiku-4-5", ContextWindow: 200000, Adaptive: false},
+			{ID: "claude-sonnet-5", ContextWindow: 1000000, Adaptive: true},
+		},
+	}})
+	if models[0].Thinking == nil || models[0].Thinking.Min != 1024 || models[0].Thinking.Max != 128000 {
+		t.Fatalf("non-adaptive model did not publish budget bounds: %+v", models[0].Thinking)
+	}
+	if models[1].Thinking == nil || models[1].Thinking.Min != 0 || models[1].Thinking.Max != 0 || !models[1].Thinking.DynamicAllowed {
+		t.Fatalf("adaptive model published a token budget: %+v", models[1].Thinking)
+	}
+}

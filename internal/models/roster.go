@@ -44,12 +44,25 @@ func applyRoster(models []pluginapi.ModelInfo, roster mirasim.ModelRoster) {
 			}
 		}
 		_, known := modelDefinitions[strings.ToLower(m.ID)]
-		if spec.Adaptive && m.Type == "claude" && known {
-			if m.Thinking == nil {
-				m.Thinking = adaptiveRelayThinking()
+		// The roster's adaptive flag is the only thing that selects the upstream
+		// thinking form, so publish the bounds that form actually accepts: an
+		// effort string carries no token budget, and a budget model cannot take
+		// an effort string. Advertising both invites a request the relay rejects.
+		if m.Type == "claude" && known {
+			if spec.Adaptive {
+				if m.Thinking == nil {
+					m.Thinking = adaptiveRelayThinking()
+				}
+				m.Thinking.Min, m.Thinking.Max = 0, 0
+				m.Thinking.DynamicAllowed = true
+				m.SupportedParameters = appendUnique(m.SupportedParameters, "thinking", "output_config")
+			} else {
+				if m.Thinking == nil {
+					m.Thinking = budgetRelayThinking()
+				}
+				m.Thinking.Min, m.Thinking.Max = 1024, 128000
+				m.SupportedParameters = appendUnique(m.SupportedParameters, "thinking")
 			}
-			m.Thinking.DynamicAllowed = true
-			m.SupportedParameters = appendUnique(m.SupportedParameters, "thinking", "output_config")
 		}
 		if len(levels) > 0 && (m.Type != "claude" || known) {
 			if m.Thinking == nil {

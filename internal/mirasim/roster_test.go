@@ -46,6 +46,26 @@ func TestRosterCacheFallbackAndIsolation(t *testing.T) {
 	}
 }
 
+func TestCachedRosterReportsThinkingShapeWithoutRequests(t *testing.T) {
+	storage, _, _ := newTestStorage(t, futureJWT())
+	client := NewClient(storage)
+	if _, known := client.CachedModelRoster().ThinkingAdaptive("claude-sonnet-5"); known {
+		t.Fatal("empty roster reported a known shape")
+	}
+	client.roster = ModelRoster{Version: "v2", Agents: map[string][]ModelSpec{
+		"claude": {{ID: "claude-sonnet-5", ContextWindow: 1000000, Adaptive: true}, {ID: "claude-legacy", ContextWindow: 200000}},
+	}}
+	if adaptive, known := client.CachedModelRoster().ThinkingAdaptive("Claude-Sonnet-5"); !known || !adaptive {
+		t.Fatalf("adaptive=%v known=%v", adaptive, known)
+	}
+	if adaptive, known := client.CachedModelRoster().ThinkingAdaptive("claude-legacy"); !known || adaptive {
+		t.Fatalf("adaptive=%v known=%v", adaptive, known)
+	}
+	if _, known := client.CachedModelRoster().ThinkingAdaptive("claude-unlisted"); known {
+		t.Fatal("unlisted model reported a known shape")
+	}
+}
+
 func TestPoolSeparatesAccountsEvenWhenDeviceKeyIsReused(t *testing.T) {
 	a, _, _ := newTestStorage(t, futureJWT())
 	a.AccountID = "account-a"

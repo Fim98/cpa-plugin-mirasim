@@ -53,15 +53,15 @@ var modelDefinitions = map[string]modelDefinition{
 	},
 	"claude-haiku-4-5": {
 		displayName: "Claude 4.5 Haiku", created: 1759276800, context: 200000, output: 64000,
-		description: "Anthropic fast Claude model with adaptive effort and manual extended thinking via Mirasim",
+		description: "Anthropic fast Claude model with adaptive effort via Mirasim",
 		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "temperature", "top_p", "top_k", "tools", "tool_choice", "thinking", "output_config"},
-		thinking: adaptiveManualRelayThinking(), modelType: "claude", owner: "anthropic",
+		thinking: adaptiveRelayThinking(), modelType: "claude", owner: "anthropic",
 	},
 	"claude-opus-4-6": {
 		displayName: "Claude 4.6 Opus", created: 1770318000, context: 1000000, output: 128000,
 		description: "Anthropic premium model combining maximum intelligence with practical performance via Mirasim",
 		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking", "output_config"},
-		thinking: adaptiveManualRelayThinking(), modelType: "claude", owner: "anthropic",
+		thinking: adaptiveRelayThinking(), modelType: "claude", owner: "anthropic",
 	},
 	"claude-opus-4-8": {
 		displayName: "Claude Opus 4.8", created: 1779984000, context: 1000000, output: 128000,
@@ -214,11 +214,15 @@ func genericDefinition(id string) modelDefinition {
 	}
 }
 
+// adaptiveRelayThinking describes the effort form: an effort string, never a
+// token budget. It is the shape every Claude model the relay publishes takes.
 func adaptiveRelayThinking() *pluginapi.ThinkingSupport {
 	return &pluginapi.ThinkingSupport{ZeroAllowed: true, DynamicAllowed: true, Levels: claudeEffortLevels()}
 }
 
-func adaptiveManualRelayThinking() *pluginapi.ThinkingSupport {
+// budgetRelayThinking describes the manual extended-thinking form, published
+// only for a Claude model the signed roster marks as non-adaptive.
+func budgetRelayThinking() *pluginapi.ThinkingSupport {
 	return &pluginapi.ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, DynamicAllowed: true, Levels: claudeEffortLevels()}
 }
 

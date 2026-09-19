@@ -17,6 +17,21 @@ const (
 	wireCodex  = "codex"
 )
 
+// ModelShape selects the Claude thinking form a model accepts upstream. The
+// official client treats the signed roster's adaptive flag as the only switch
+// between the effort form and the token-budget form; guessing the wrong one is
+// rejected on every turn, so it is never inferred from the model name.
+type ModelShape int
+
+const (
+	// ShapeUnknown has no roster entry and falls back to the relay default.
+	ShapeUnknown ModelShape = iota
+	// ShapeAdaptive takes thinking.type=adaptive with output_config.effort.
+	ShapeAdaptive
+	// ShapeBudget takes thinking.type=enabled with budget_tokens.
+	ShapeBudget
+)
+
 // ParsedModel contains the provider model name and an optional CPA-compatible
 // thinking suffix. ModelName never contains a leading mirasim/ prefix or a
 // trailing parenthesized suffix.
@@ -104,8 +119,16 @@ func parseContextSelector(parsed ParsedModel) ParsedModel {
 }
 
 // ApplyForWire applies a canonical thinking configuration after request
-// translation, when the executor knows the actual Mirasim wire protocol.
+// translation, when the executor knows the actual Mirasim wire protocol. It
+// assumes the relay default shape; callers holding the account roster should
+// use ApplyForWireWithShape.
 func ApplyForWire(body []byte, model, wire string, config pluginapi.ThinkingConfig) ([]byte, error) {
+	return ApplyForWireWithShape(body, model, wire, config, ShapeUnknown)
+}
+
+// ApplyForWireWithShape applies a canonical thinking configuration using the
+// upstream thinking form the account's signed roster reports for the model.
+func ApplyForWireWithShape(body []byte, model, wire string, config pluginapi.ThinkingConfig, shape ModelShape) ([]byte, error) {
 	body = validBody(body)
 	config = normalizeConfig(config)
 	if config.Level == "ultra" {
@@ -116,7 +139,7 @@ func ApplyForWire(body []byte, model, wire string, config pluginapi.ThinkingConf
 	}
 	switch strings.ToLower(strings.TrimSpace(wire)) {
 	case wireClaude:
-		return applyClaude(body, model, config)
+		return applyClaude(body, model, config, shape)
 	case wireCodex, "openai-response":
 		return applyCodex(body, config), nil
 	default:
@@ -150,22 +173,23 @@ func normalizeConfig(config pluginapi.ThinkingConfig) pluginapi.ThinkingConfig {
 	return config
 }
 
-func applyClaude(body []byte, model string, config pluginapi.ThinkingConfig) ([]byte, error) {
+func applyClaude(body []byte, model string, config pluginapi.ThinkingConfig, shape ModelShape) ([]byte, error) {
 	model = strings.ToLower(strings.TrimSpace(model))
+	adaptive := adaptiveClaude(shape)
 	switch config.Mode {
 	case "none":
 		body = setString(body, "thinking.type", "disabled")
 		body = deletePath(body, "thinking.budget_tokens")
 		return deleteClaudeEffort(body), nil
 	case "auto":
-		if supportsAdaptiveClaude(model) {
+		if adaptive {
 			body = setString(body, "thinking.type", "adaptive")
 			body = deletePath(body, "thinking.budget_tokens")
 			return deleteClaudeEffort(body), nil
 		}
 		return applyManualClaude(body, 1024)
 	case "level":
-		if supportsAdaptiveClaude(model) {
+		if adaptive {
 			if !isAdaptiveClaudeEffort(config.Level) {
 				return body, &ConfigError{
 					Code:    "mirasim_claude_effort_invalid",
@@ -182,7 +206,7 @@ func applyClaude(body []byte, model string, config pluginapi.ThinkingConfig) ([]
 		}
 		return applyManualClaude(body, budget)
 	case "budget":
-		if supportsAdaptiveOnlyClaude(model) {
+		if adaptive {
 			return body, &ConfigError{
 				Code:    "mirasim_claude_budget_unsupported",
 				Message: fmt.Sprintf("Claude model %s requires adaptive thinking and does not accept a fixed token budget", model),
@@ -240,19 +264,13 @@ func applyCodex(body []byte, config pluginapi.ThinkingConfig) []byte {
 	return deletePath(body, "reasoning_effort")
 }
 
-func supportsAdaptiveClaude(model string) bool {
-	return supportsAdaptiveOnlyClaude(model) ||
-		strings.HasPrefix(model, "claude-haiku-4-5") ||
-		strings.Contains(model, "-4-6")
-}
-
-func supportsAdaptiveOnlyClaude(model string) bool {
-	return strings.HasPrefix(model, "claude-fable-5") ||
-		strings.HasPrefix(model, "claude-mythos-") ||
-		strings.HasPrefix(model, "claude-opus-5") ||
-		strings.Contains(model, "claude-opus-4-7") ||
-		strings.Contains(model, "claude-opus-4-8") ||
-		strings.HasPrefix(model, "claude-sonnet-5")
+// adaptiveClaude reports whether the model takes the effort form. Every Claude
+// model the relay publishes is adaptive in the inspected 0.0.310 client
+// catalog, so a model without a roster entry — including one released after
+// this build — keeps that form, and only an explicit roster entry moves a model
+// to the token-budget form.
+func adaptiveClaude(shape ModelShape) bool {
+	return shape != ShapeBudget
 }
 
 func isAdaptiveClaudeEffort(level string) bool {

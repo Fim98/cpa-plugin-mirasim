@@ -100,7 +100,7 @@ func TestApplyForWireMapsAdaptiveClaudeEffort(t *testing.T) {
 
 func TestApplyForWireNormalizesManualClaudeBudget(t *testing.T) {
 	body := []byte(`{"model":"claude-haiku-4-5","max_tokens":2048,"messages":[],"output_config":{"effort":"high","format":{"type":"json_schema"}}}`)
-	out, errApply := ApplyForWire(body, "claude-haiku-4-5", wireClaude, pluginapi.ThinkingConfig{Mode: "budget", Budget: 4096})
+	out, errApply := ApplyForWireWithShape(body, "claude-haiku-4-5", wireClaude, pluginapi.ThinkingConfig{Mode: "budget", Budget: 4096}, ShapeBudget)
 	if errApply != nil {
 		t.Fatal(errApply)
 	}
@@ -112,6 +112,44 @@ func TestApplyForWireNormalizesManualClaudeBudget(t *testing.T) {
 	}
 	if gjson.GetBytes(out, "output_config.effort").Exists() || gjson.GetBytes(out, "output_config.format.type").String() != "json_schema" {
 		t.Fatalf("output_config was not preserved without effort: %s", out)
+	}
+}
+
+func TestApplyForWireKeepsUnrosteredClaudeOnTheEffortForm(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-9","max_tokens":4096,"messages":[]}`)
+	// A Claude model released after this build has no static entry and no
+	// roster entry. The relay generation is uniformly adaptive, so it must not
+	// fall back to a token budget the Messages mount would reject.
+	out, errApply := ApplyForWire(body, "claude-opus-9", wireClaude, pluginapi.ThinkingConfig{Mode: "level", Level: "high"})
+	if errApply != nil || gjson.GetBytes(out, "thinking.type").String() != "adaptive" || gjson.GetBytes(out, "output_config.effort").String() != "high" {
+		t.Fatalf("body = %s, error = %v", out, errApply)
+	}
+	if gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
+		t.Fatalf("effort form carried a token budget: %s", out)
+	}
+
+	for _, model := range []string{"claude-haiku-4-5", "claude-opus-4-6", "claude-opus-9"} {
+		_, errBudget := ApplyForWire(body, model, wireClaude, pluginapi.ThinkingConfig{Mode: "budget", Budget: 4096})
+		var configErr *ConfigError
+		if !errors.As(errBudget, &configErr) || configErr.Code != "mirasim_claude_budget_unsupported" {
+			t.Fatalf("%s accepted a token budget: %v", model, errBudget)
+		}
+	}
+}
+
+func TestApplyForWireFollowsRosterShape(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-5","max_tokens":16384,"messages":[]}`)
+	budget, errBudget := ApplyForWireWithShape(body, "claude-sonnet-5", wireClaude, pluginapi.ThinkingConfig{Mode: "level", Level: "medium"}, ShapeBudget)
+	if errBudget != nil || gjson.GetBytes(budget, "thinking.type").String() != "enabled" || gjson.GetBytes(budget, "thinking.budget_tokens").Int() != 8192 {
+		t.Fatalf("budget body = %s, error = %v", budget, errBudget)
+	}
+	if gjson.GetBytes(budget, "output_config.effort").Exists() {
+		t.Fatalf("budget form carried an effort string: %s", budget)
+	}
+
+	adaptive, errAdaptive := ApplyForWireWithShape(body, "claude-haiku-4-5", wireClaude, pluginapi.ThinkingConfig{Mode: "level", Level: "medium"}, ShapeAdaptive)
+	if errAdaptive != nil || gjson.GetBytes(adaptive, "thinking.type").String() != "adaptive" || gjson.GetBytes(adaptive, "output_config.effort").String() != "medium" {
+		t.Fatalf("adaptive body = %s, error = %v", adaptive, errAdaptive)
 	}
 }
 

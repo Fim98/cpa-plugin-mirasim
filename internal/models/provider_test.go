@@ -54,8 +54,10 @@ func TestStaticModelsExposeClaudeAndGPTFallback(t *testing.T) {
 	if sonnet.ContextLength != 1000000 || sonnet.MaxCompletionTokens != 128000 || sonnet.Thinking == nil || !sonnet.Thinking.DynamicAllowed || !sonnet.Thinking.ZeroAllowed || len(sonnet.Thinking.Levels) != 5 || sonnet.Thinking.Levels[0] != "low" || sonnet.Thinking.Levels[4] != "max" {
 		t.Fatalf("Claude Sonnet 5 metadata = %#v", sonnet)
 	}
+	// Every Claude model the relay publishes takes the effort form, so none of
+	// them advertise a token budget until a signed roster says otherwise.
 	haiku := byID["claude-haiku-4-5"]
-	if haiku.ContextLength != 200000 || haiku.MaxCompletionTokens != 64000 || haiku.Thinking == nil || haiku.Thinking.Min != 1024 || haiku.Thinking.Max != 128000 || !haiku.Thinking.DynamicAllowed || len(haiku.Thinking.Levels) != 5 {
+	if haiku.ContextLength != 200000 || haiku.MaxCompletionTokens != 64000 || haiku.Thinking == nil || haiku.Thinking.Min != 0 || haiku.Thinking.Max != 0 || !haiku.Thinking.DynamicAllowed || len(haiku.Thinking.Levels) != 5 {
 		t.Fatalf("Claude Haiku 4.5 metadata = %#v", haiku)
 	}
 	fable := byID["claude-fable-5-1"]
@@ -63,7 +65,7 @@ func TestStaticModelsExposeClaudeAndGPTFallback(t *testing.T) {
 		t.Fatalf("Claude Fable 5.1 metadata = %#v", fable)
 	}
 	opus := byID["claude-opus-4-6"]
-	if opus.Created != 1770318000 || opus.ContextLength != 1000000 || opus.MaxCompletionTokens != 128000 || opus.Thinking == nil || opus.Thinking.Min != 1024 || opus.Thinking.Max != 128000 || !opus.Thinking.DynamicAllowed {
+	if opus.Created != 1770318000 || opus.ContextLength != 1000000 || opus.MaxCompletionTokens != 128000 || opus.Thinking == nil || opus.Thinking.Min != 0 || opus.Thinking.Max != 0 || !opus.Thinking.DynamicAllowed {
 		t.Fatalf("Claude Opus 4.6 metadata = %#v", opus)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	pluginconfig "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/config"
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/credentials"
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/mirasim"
+	thinkingpkg "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/thinking"
 	"github.com/tidwall/gjson"
 )
 
@@ -108,7 +109,7 @@ func TestBuildProviderRequestRoutesByModelAndClientProtocol(t *testing.T) {
 				SourceFormat: test.format.String(),
 				Format:       test.format.String(),
 				Payload:      []byte(test.payload),
-			}, false)
+			}, false, thinkingpkg.ShapeUnknown)
 			if errBuild != nil {
 				t.Fatalf("buildProviderRequest() error = %v", errBuild)
 			}
@@ -134,7 +135,7 @@ func TestClaudeNormalizationPreservesOutputConfig(t *testing.T) {
 		Model:        "claude-sonnet-5",
 		SourceFormat: sdktranslator.FormatClaude.String(),
 		Payload:      []byte(`{"model":"claude-sonnet-5","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"output_config":{"effort":"high","format":{"type":"json_schema"}}}`),
-	}, false)
+	}, false, thinkingpkg.ShapeUnknown)
 	if errBuild != nil {
 		t.Fatalf("buildProviderRequest() error = %v", errBuild)
 	}
@@ -153,6 +154,7 @@ func TestBuildProviderRequestAppliesThinkingSuffixAfterTranslation(t *testing.T)
 		wantField  string
 		wantString string
 		wantBudget int64
+		shape      thinkingpkg.ModelShape
 	}{
 		{
 			name:       "adaptive Claude auto",
@@ -172,6 +174,7 @@ func TestBuildProviderRequestAppliesThinkingSuffixAfterTranslation(t *testing.T)
 			wantField:  "thinking.type",
 			wantString: "enabled",
 			wantBudget: 2048,
+			shape:      thinkingpkg.ShapeBudget,
 		},
 		{
 			name:       "Codex named effort",
@@ -190,7 +193,7 @@ func TestBuildProviderRequestAppliesThinkingSuffixAfterTranslation(t *testing.T)
 				SourceFormat: test.format.String(),
 				Format:       test.format.String(),
 				Payload:      []byte(test.payload),
-			}, false)
+			}, false, test.shape)
 			if errBuild != nil {
 				t.Fatal(errBuild)
 			}
@@ -215,7 +218,7 @@ func TestBuildProviderRequestAppliesClaudeEffort(t *testing.T) {
 		Model:        "claude-sonnet-5(low)",
 		SourceFormat: sdktranslator.FormatClaude.String(),
 		Payload:      []byte(`{"model":"claude-sonnet-5(low)","max_tokens":4096,"messages":[{"role":"user","content":"hello"}]}`),
-	}, false)
+	}, false, thinkingpkg.ShapeUnknown)
 	if errBuild != nil || gjson.GetBytes(body, "thinking.type").String() != "adaptive" || gjson.GetBytes(body, "output_config.effort").String() != "low" {
 		t.Fatalf("body = %s, error = %v", body, errBuild)
 	}
@@ -226,6 +229,7 @@ func TestHTTPRequestNormalizationPreservesExplicitStreamValue(t *testing.T) {
 		[]byte(`{"model":"mirasim/gpt-5.6-sol","stream":false,"input":"hello"}`),
 		"gpt-5.6-sol",
 		sdktranslator.FormatCodex,
+		thinkingpkg.ShapeUnknown,
 	)
 	if errNormalize != nil {
 		t.Fatalf("normalizeHTTPRequestBody() error = %v", errNormalize)
@@ -242,6 +246,7 @@ func TestHTTPRequestNormalizationPreservesClaudeOutputConfig(t *testing.T) {
 		[]byte(`{"model":"claude-sonnet-5","messages":[],"output_config":{"effort":"max","format":{"type":"json_schema"}}}`),
 		"claude-sonnet-5",
 		sdktranslator.FormatClaude,
+		thinkingpkg.ShapeUnknown,
 	)
 	if errNormalize != nil {
 		t.Fatalf("normalizeHTTPRequestBody() error = %v", errNormalize)

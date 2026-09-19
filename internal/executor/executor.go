@@ -46,7 +46,7 @@ func (e *Executor) Execute(ctx context.Context, req pluginapi.ExecutorRequest) (
 	if errClient != nil {
 		return pluginapi.ExecutorResponse{}, errClient
 	}
-	requestBody, route, errBuild := buildProviderRequest(req, false)
+	requestBody, route, errBuild := buildProviderRequest(req, false, claudeShape(client, req.Model))
 	if errBuild != nil {
 		return pluginapi.ExecutorResponse{}, errBuild
 	}
@@ -83,7 +83,7 @@ func (e *Executor) ExecuteStream(ctx context.Context, req pluginapi.ExecutorRequ
 	if errClient != nil {
 		return pluginapi.ExecutorStreamResponse{}, errClient
 	}
-	requestBody, route, errBuild := buildProviderRequest(req, true)
+	requestBody, route, errBuild := buildProviderRequest(req, true, claudeShape(client, req.Model))
 	if errBuild != nil {
 		return pluginapi.ExecutorStreamResponse{}, errBuild
 	}
@@ -169,7 +169,8 @@ func (e *Executor) HttpRequest(ctx context.Context, req pluginapi.ExecutorHTTPRe
 		if strings.HasPrefix(relayPath, "/v1/messages") {
 			wireFormat = sdktranslator.FormatClaude
 		}
-		body, errParse = normalizeHTTPRequestBody(body, modelFromJSON(body), wireFormat)
+		model := modelFromJSON(body)
+		body, errParse = normalizeHTTPRequestBody(body, model, wireFormat, claudeShape(client, model))
 		if errParse != nil {
 			return pluginapi.ExecutorHTTPResponse{}, errParse
 		}
@@ -222,7 +223,22 @@ type providerRoute struct {
 	Query  url.Values
 }
 
-func buildProviderRequest(req pluginapi.ExecutorRequest, stream bool) ([]byte, providerRoute, error) {
+// claudeShape resolves the upstream thinking form from the account's signed
+// roster. Only an already observed roster is consulted: model discovery keeps
+// it warm, and an unknown shape falls back to the relay default.
+func claudeShape(client *mirasim.Client, model string) thinkingpkg.ModelShape {
+	adaptive, known := client.CachedModelRoster().ThinkingAdaptive(thinkingpkg.ParseModel(model).ModelName)
+	switch {
+	case !known:
+		return thinkingpkg.ShapeUnknown
+	case adaptive:
+		return thinkingpkg.ShapeAdaptive
+	default:
+		return thinkingpkg.ShapeBudget
+	}
+}
+
+func buildProviderRequest(req pluginapi.ExecutorRequest, stream bool, shape thinkingpkg.ModelShape) ([]byte, providerRoute, error) {
 	if err := thinkingpkg.ValidateWorkflowRequest(req.Payload, req.Model); err != nil {
 		return nil, providerRoute{}, err
 	}
@@ -239,7 +255,7 @@ func buildProviderRequest(req pluginapi.ExecutorRequest, stream bool) ([]byte, p
 		return nil, providerRoute{}, errNormalize
 	}
 	if parsedModel.HasConfig {
-		body, errNormalize = thinkingpkg.ApplyForWire(body, model, wire.String(), parsedModel.Config)
+		body, errNormalize = thinkingpkg.ApplyForWireWithShape(body, model, wire.String(), parsedModel.Config, shape)
 		if errNormalize != nil {
 			return nil, providerRoute{}, errNormalize
 		}
@@ -481,7 +497,7 @@ func upstreamHeaders(source http.Header, wire sdktranslator.Format) http.Header 
 	return headers
 }
 
-func normalizeHTTPRequestBody(body []byte, model string, wire sdktranslator.Format) ([]byte, error) {
+func normalizeHTTPRequestBody(body []byte, model string, wire sdktranslator.Format, shape thinkingpkg.ModelShape) ([]byte, error) {
 	if err := thinkingpkg.ValidateWorkflowRequest(body, model); err != nil {
 		return nil, err
 	}
@@ -498,7 +514,7 @@ func normalizeHTTPRequestBody(body []byte, model string, wire sdktranslator.Form
 		return nil, fmt.Errorf("encode Mirasim HTTP request: %w", errMarshal)
 	}
 	if parsedModel.HasConfig {
-		updated, errApply := thinkingpkg.ApplyForWire(updated, parsedModel.ModelName, wire.String(), parsedModel.Config)
+		updated, errApply := thinkingpkg.ApplyForWireWithShape(updated, parsedModel.ModelName, wire.String(), parsedModel.Config, shape)
 		if errApply != nil {
 			return nil, errApply
 		}

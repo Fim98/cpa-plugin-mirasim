@@ -67,6 +67,24 @@ func parseRoster(raw []byte) (ModelRoster, error) {
 	return roster, nil
 }
 
+// ThinkingAdaptive reports the signed roster's adaptive flag for one model.
+// The second result is false when the roster carries no entry for it, which
+// leaves the upstream thinking form to the caller's default.
+func (r ModelRoster) ThinkingAdaptive(modelID string) (bool, bool) {
+	modelID = strings.ToLower(strings.TrimSpace(modelID))
+	if modelID == "" {
+		return false, false
+	}
+	for _, specs := range r.Agents {
+		for _, spec := range specs {
+			if spec.ID == modelID {
+				return spec.Adaptive, true
+			}
+		}
+	}
+	return false, false
+}
+
 func (r ModelRoster) Clone() ModelRoster {
 	out := ModelRoster{Version: r.Version, Agents: make(map[string][]ModelSpec)}
 	for k, v := range r.Agents {
@@ -76,6 +94,15 @@ func (r ModelRoster) Clone() ModelRoster {
 		}
 	}
 	return out
+}
+
+// CachedModelRoster returns the roster already observed for this credential
+// without issuing a request. Request paths read the roster through this so a
+// cold or unreachable roster never adds latency to an inference call.
+func (c *Client) CachedModelRoster() ModelRoster {
+	c.rosterMu.Lock()
+	defer c.rosterMu.Unlock()
+	return c.roster.Clone()
 }
 
 // Optional metadata is cached on this credential's client, never globally.
