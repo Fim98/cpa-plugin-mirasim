@@ -105,6 +105,7 @@ type Client struct {
 	mu                 sync.Mutex
 	loaded             bool
 	accessToken        string
+	relayAccountID     string
 	refreshToken       string
 	accessExpiresAt    time.Time
 	privateKey         ed25519.PrivateKey
@@ -572,6 +573,7 @@ func (c *Client) refreshAccessLocked(ctx context.Context) error {
 	}
 	now := c.nowTime().UTC()
 	c.accessToken = payload.AccessToken
+	c.relayAccountID = credentials.AccessTokenAgentAccount(payload.AccessToken)
 	c.storage.AccessToken = payload.AccessToken
 	c.storage.PopulateIdentityFromAccessToken()
 	if plan, planExpiresAt := credentials.AccessTokenPlan(payload.AccessToken); plan != "" {
@@ -593,6 +595,7 @@ func (c *Client) loadLocked() error {
 	}
 	c.refreshToken = strings.TrimSpace(c.storage.RefreshToken)
 	c.accessToken = strings.TrimSpace(c.storage.AccessToken)
+	c.relayAccountID = credentials.AccessTokenAgentAccount(c.accessToken)
 	c.accessExpiresAt = c.storage.AccessTokenExpiry(c.nowTime())
 	c.loaded = true
 	return nil

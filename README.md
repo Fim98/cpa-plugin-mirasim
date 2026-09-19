@@ -78,7 +78,7 @@ Mirasim mails a code and the command prompts for it. Where no prompt can be answ
 
 Set `collect: false` to send the official `x-mirasim-collect: off` signal inside signed/encrypted metadata. Omitted or true follows the relay default. `locale` is optional. Environment defaults are `MIRASIM_COLLECT` and `MIRASIM_LOCALE`; explicit YAML wins. This requests upstream behavior; it does not prove how the service retains data.
 
-Account IDs come from CPA auth storage. Host `execution_session_id` values produce stable, account-scoped relay session IDs; a host integration may supply `mirasim_turn_id` in executor metadata for task association. Missing task IDs are omitted. Browser-supplied `x-mirasim-*` headers cannot override these values. Repository paths and Git metadata are not collected by the plugin.
+`x-mirasim-account` carries a sub-account only when the access token names one. An account without that claim sends no account header at all, matching the official client; the local identity used for auth file naming and session scoping is never substituted for it. Host `execution_session_id` values produce stable, account-scoped relay session IDs; a host integration may supply `mirasim_turn_id` in executor metadata for task association. Missing task IDs are omitted. Browser-supplied `x-mirasim-*` headers cannot override these values. Repository paths and Git metadata are not collected by the plugin.
 
 ## Model metadata
 

@@ -928,6 +928,12 @@ func jwtWithExpiry(expiry time.Time) string {
 	return header + "." + payload + ".signature"
 }
 
+func agentAccountJWT(accountID string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload, _ := json.Marshal(map[string]any{"sub": "usr_local", "account_id": accountID, "exp": time.Now().Add(time.Hour).Unix()})
+	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
+}
+
 func planJWT(expiry time.Time, plan string, planExpiresAt int64) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
 	payload, _ := json.Marshal(map[string]any{"sub": "account", "exp": expiry.Unix(), "plan": plan, "plan_exp": planExpiresAt})

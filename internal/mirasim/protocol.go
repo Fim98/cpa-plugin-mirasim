@@ -190,7 +190,10 @@ func (c *Client) relayMetadataLocked(ctx context.Context, requestPath string) (m
 			metadata["x-mirasim-turn"] = identity.turn
 		}
 	}
-	if value := safeMetadata(c.storage.AccountID); value != "" {
+	// Only a sub-account the token itself names belongs in this header. The
+	// official client leaves it out when the signed-in identity has none, and
+	// the user ID it also holds is a different field that is not sent.
+	if value := safeMetadata(c.relayAccountID); value != "" {
 		metadata["x-mirasim-account"] = value
 	}
 	if value := safeMetadata(c.options.Locale); value != "" {

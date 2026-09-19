@@ -294,6 +294,15 @@ func (s *Storage) PopulateIdentityFromAccessToken() {
 	s.Email = strings.TrimSpace(s.Email)
 }
 
+// AccessTokenAgentAccount returns the sub-account a relay request belongs to.
+// The official client keeps this distinct from the user ID and sends
+// x-mirasim-account only when the signed-in identity carries one, so a token
+// with no such claim contributes no header. AccountID is a local identity used
+// for file naming and session derivation and is not a substitute for it.
+func AccessTokenAgentAccount(token string) string {
+	return firstClaimString(jwtClaims(token), "account_id", "accountId")
+}
+
 // PopulatePlanFromAccessToken seeds plan metadata for a newly installed or
 // older auth record. A successful /auth/me profile check remains authoritative.
 func (s *Storage) PopulatePlanFromAccessToken() {

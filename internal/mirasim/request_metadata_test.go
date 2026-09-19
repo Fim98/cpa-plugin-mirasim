@@ -9,8 +9,8 @@ import (
 )
 
 func TestRelayOptionsAreSignedAndCannotBeOverridden(t *testing.T) {
-	storage, pub, key := newTestStorage(t, futureJWT())
-	storage.AccountID = "account-a"
+	storage, pub, key := newTestStorage(t, agentAccountJWT("acct_42"))
+	storage.AccountID = "usr_local"
 	off := false
 	client := NewPool(RelayOptions{Collect: &off, Locale: "zh-CN"}).Client(storage)
 	var sessions []string
@@ -21,7 +21,7 @@ func TestRelayOptionsAreSignedAndCannotBeOverridden(t *testing.T) {
 		}
 		assertSealedRelayRequest(t, pub, key, r, "t")
 		m := decryptRelayMetadata(t, key, r.Method, u.Path, r.Headers.Get(headerMirasimEncryptedMetadata))
-		if m["x-mirasim-collect"] != "off" || m["x-mirasim-locale"] != "zh-CN" || m["x-mirasim-account"] != "account-a" || m["x-mirasim-turn"] != "turn-a" {
+		if m["x-mirasim-collect"] != "off" || m["x-mirasim-locale"] != "zh-CN" || m["x-mirasim-account"] != "acct_42" || m["x-mirasim-turn"] != "turn-a" {
 			t.Fatalf("metadata=%+v", m)
 		}
 		if m[headerMirasimCall] != "" {
@@ -42,5 +42,27 @@ func TestRelayOptionsAreSignedAndCannotBeOverridden(t *testing.T) {
 	}
 	if safeMetadata("bad\nheader") != "" {
 		t.Fatal("control character accepted")
+	}
+}
+
+func TestRelayOmitsTheAccountHeaderWhenTheTokenNamesNoSubAccount(t *testing.T) {
+	// A plain user token carries sub but no account_id. The official client
+	// sends nothing in that case, and the user ID is not a stand-in for it.
+	storage, pub, key := newTestStorage(t, futureJWT())
+	storage.AccountID = "usr_local"
+	client := NewPool().Client(storage)
+	host := fakeHostClient{do: func(_ context.Context, r pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		u, _ := url.Parse(r.URL)
+		if u.Path == sessionPath {
+			return pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"ticket":"t","expiresIn":900}`)}, nil
+		}
+		assertSealedRelayRequest(t, pub, key, r, "t")
+		if m := decryptRelayMetadata(t, key, r.Method, u.Path, r.Headers.Get(headerMirasimEncryptedMetadata)); m["x-mirasim-account"] != "" {
+			t.Fatalf("a local account identity was reported upstream: %+v", m)
+		}
+		return pluginapi.HTTPResponse{StatusCode: 200}, nil
+	}}
+	if _, err := client.Do(context.Background(), host, "POST", "/v1/messages", nil, nil, []byte("{}")); err != nil {
+		t.Fatal(err)
 	}
 }
