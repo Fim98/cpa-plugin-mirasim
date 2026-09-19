@@ -72,7 +72,7 @@ Account IDs come from CPA auth storage. Host `execution_session_id` values produ
 
 ## Model metadata
 
-The fallback catalog includes GPT 6 Astra and GPT 5.6 Sol/Terra/Luna. Their fallback context is 872,000 tokens, matching the inspected 0.0.310 running client selection list, with a 128,000-token output limit. These are client metadata, not account-tested capacity guarantees. Claude Haiku remains in the catalog; a desktop toggle does not imply upstream removal.
+The fallback catalog includes GPT 6 Astra and GPT 5.6 Sol/Terra/Luna. Their fallback context is 1,050,000 tokens for Astra and 872,000 for the GPT 5.6 models, taken from the roster built into the inspected 0.0.310 client rather than from its narrower model-picker list, with a 128,000-token output limit. These are client metadata, not account-tested capacity guarantees. Claude Haiku remains in the catalog; a desktop toggle does not imply upstream removal.
 
 Model membership comes from the account's `/v1/models`, and a `max_input_tokens` it reports supersedes the static fallback context above, so the published window is the one this account is actually served. Signed `/v1/model-roster` overlays context/output limits and effort when available. Specs are cached per credential in memory for ten minutes; failures retain that credential's last successful specs, otherwise static defaults apply. The cache is not persisted in auth files and resets on reload. CPA 7.2.146 cannot publish `autoCompactRatio`, so callers still control compaction thresholds.
 

@@ -47,7 +47,7 @@ func TestStaticModelsExposeClaudeAndGPTFallback(t *testing.T) {
 		byID[model.ID] = model
 	}
 	astra := byID["gpt-6-astra"]
-	if astra.ContextLength != 872000 || astra.MaxCompletionTokens != 128000 || astra.Thinking == nil {
+	if astra.ContextLength != 1050000 || astra.MaxCompletionTokens != 128000 || astra.Thinking == nil {
 		t.Fatalf("Astra metadata=%+v", astra)
 	}
 	sonnet := byID["claude-sonnet-5"]
@@ -90,11 +90,11 @@ func TestExposedModelsIncludesClaudeAndGPTCatalogEntries(t *testing.T) {
 
 func TestExposedModelsPreferTheServedContextWindow(t *testing.T) {
 	models := exposedModels([]mirasim.RemoteModel{
-		{ID: "gpt-6-astra", MaxInputTokens: 1050000},
+		{ID: "gpt-6-astra", MaxInputTokens: 900000},
 		{ID: "claude-sonnet-5", MaxInputTokens: 400000},
 		{ID: "gpt-5.6-sol"},
 	})
-	if models[0].ContextLength != 1050000 || models[0].InputTokenLimit != 1050000 {
+	if models[0].ContextLength != 900000 || models[0].InputTokenLimit != 900000 {
 		t.Fatalf("static fallback outranked the account catalog: %#v", models[0])
 	}
 	// A smaller served window must shrink the published one, and take the

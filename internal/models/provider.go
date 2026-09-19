@@ -81,8 +81,11 @@ var modelDefinitions = map[string]modelDefinition{
 		methods:     []string{"messages", "countTokens"}, parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking", "output_config"},
 		thinking: adaptiveRelayThinking(), modelType: "claude", owner: "anthropic",
 	},
+	// Astra's context comes from the roster the official client falls back to,
+	// not from its model-picker list. The two disagree, and the roster is the
+	// table the relay itself publishes.
 	"gpt-6-astra": {
-		displayName: "GPT 6 Astra", version: "gpt-6", context: 872000, output: 128000,
+		displayName: "GPT 6 Astra", version: "gpt-6", context: 1050000, output: 128000,
 		description: "OpenAI GPT 6 Astra via Mirasim",
 		methods:     []string{"responses"}, parameters: []string{"tools", "thinking"}, thinking: codexThinking(), modelType: "openai", owner: "openai",
 	},
