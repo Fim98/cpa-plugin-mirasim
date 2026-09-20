@@ -32,7 +32,7 @@ func Build(configYAML []byte) pluginapi.Plugin {
 		auth:       authProvider,
 		models:     models.New(settings, pool),
 		executor:   executor.New(settings, pool),
-		management: management.New(settings, pool, authProvider),
+		management: management.New(authProvider),
 		thinking:   thinkingpkg.NewApplier(),
 		quota:      quota.New(settings, pool),
 	}
@@ -124,8 +124,8 @@ func (p *MirasimPlugin) RegisterManagement(ctx context.Context, req pluginapi.Ma
 	return p.management.RegisterManagement(ctx, req)
 }
 
-func (p *MirasimPlugin) HandleManagement(ctx context.Context, req pluginapi.ManagementRequest, host management.HostServices) (pluginapi.ManagementResponse, error) {
-	return p.management.HandleWithHost(ctx, req, host)
+func (p *MirasimPlugin) HandleManagement(ctx context.Context, req pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	return p.management.HandleManagement(ctx, req)
 }
 
 func (p *MirasimPlugin) DescribeQuota(ctx context.Context, req pluginapi.QuotaDescribeRequest) (pluginapi.QuotaDescribeResponse, error) {
@@ -146,4 +146,5 @@ var _ pluginapi.ProviderExecutor = (*MirasimPlugin)(nil)
 var _ pluginapi.ThinkingApplier = (*MirasimPlugin)(nil)
 var _ pluginapi.CommandLinePlugin = (*MirasimPlugin)(nil)
 var _ pluginapi.ManagementAPI = (*MirasimPlugin)(nil)
+var _ pluginapi.ManagementHandler = (*MirasimPlugin)(nil)
 var _ pluginapi.QuotaProvider = (*MirasimPlugin)(nil)

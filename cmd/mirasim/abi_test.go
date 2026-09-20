@@ -78,7 +78,9 @@ func TestABIRegisterAndManagementRoute(t *testing.T) {
 	if errDecode := json.Unmarshal(envelope.Result, &management); errDecode != nil {
 		t.Fatalf("decode management registration: %v", errDecode)
 	}
-	if len(management.Routes) != 1 || management.Routes[0].Method != "GET" || management.Routes[0].Path != "/mirasim/quota" {
+	// Limits are reported by the quota provider, so no authenticated route of
+	// our own is registered any more.
+	if len(management.Routes) != 0 {
 		t.Fatalf("management routes = %#v", management.Routes)
 	}
 	if len(management.Resources) != 2 || management.Resources[0].Path != "/oauth/start" || management.Resources[1].Path != "/oauth/callback" {

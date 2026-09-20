@@ -55,7 +55,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/management"
 	mirasimplugin "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/plugin"
 )
 
@@ -128,11 +127,6 @@ type abiThinkingApplyRequest struct {
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
-type abiManagementRequest struct {
-	pluginapi.ManagementRequest
-	HostCallbackID string `json:"host_callback_id,omitempty"`
-}
-
 type abiQuotaFetchRequest struct {
 	pluginapi.QuotaFetchRequest
 	HostCallbackID string `json:"host_callback_id,omitempty"`
@@ -200,15 +194,6 @@ type abiHostStreamEmitRequest struct {
 type abiHostStreamCloseRequest struct {
 	StreamID string `json:"stream_id"`
 	Error    string `json:"error,omitempty"`
-}
-
-type abiHostAuthListResponse struct {
-	Files []pluginapi.HostAuthFileEntry `json:"files"`
-}
-
-type abiHostAuthGetRequest struct {
-	pluginapi.HostAuthGetRequest
-	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
 type abiEmptyResponse struct{}
@@ -409,11 +394,11 @@ func handleABIMethod(ctx context.Context, method string, request []byte) ([]byte
 		}
 		return abiOKEnvelope(toABIManagementRegistration(resp))
 	case pluginabi.MethodManagementHandle:
-		var rpcReq abiManagementRequest
-		if errDecode := json.Unmarshal(request, &rpcReq); errDecode != nil {
+		var req pluginapi.ManagementRequest
+		if errDecode := json.Unmarshal(request, &req); errDecode != nil {
 			return nil, errDecode
 		}
-		resp, errCall := p.HandleManagement(ctx, rpcReq.ManagementRequest, abiHostServices{callbackID: rpcReq.HostCallbackID})
+		resp, errCall := p.HandleManagement(ctx, req)
 		return abiOKEnvelopeWithError(resp, errCall)
 	case pluginabi.MethodQuotaDescribe:
 		var req pluginapi.QuotaDescribeRequest
@@ -619,30 +604,6 @@ func pumpABIStream(ctx context.Context, streamID string, chunks <-chan pluginapi
 		}
 	}
 }
-
-type abiHostServices struct {
-	callbackID string
-}
-
-func (s abiHostServices) HTTPClient() pluginapi.HostHTTPClient {
-	return abiHostHTTPClient{callbackID: s.callbackID}
-}
-
-func (s abiHostServices) ListAuth(context.Context) ([]pluginapi.HostAuthFileEntry, error) {
-	resp, errCall := callHost[abiHostAuthListResponse](pluginabi.MethodHostAuthList, map[string]any{
-		"host_callback_id": s.callbackID,
-	})
-	return resp.Files, errCall
-}
-
-func (s abiHostServices) GetAuth(_ context.Context, authIndex string) (pluginapi.HostAuthGetResponse, error) {
-	return callHost[pluginapi.HostAuthGetResponse](pluginabi.MethodHostAuthGet, abiHostAuthGetRequest{
-		HostAuthGetRequest: pluginapi.HostAuthGetRequest{AuthIndex: authIndex},
-		HostCallbackID:     s.callbackID,
-	})
-}
-
-var _ management.HostServices = abiHostServices{}
 
 func callHost[T any](method string, request any) (T, error) {
 	var zero T
