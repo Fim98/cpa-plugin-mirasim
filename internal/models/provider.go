@@ -173,6 +173,9 @@ func applyCatalogContext(model *pluginapi.ModelInfo, contextWindow int64) {
 	model.InputTokenLimit = contextWindow
 }
 
+// isExposedModel keeps the families this plugin has a wire for: Claude goes to
+// Messages and GPT to Responses. The official client hides the other families
+// the relay lists from its own picker, so nothing servable is withheld here.
 func isExposedModel(id string) bool {
 	id = strings.ToLower(strings.TrimSpace(id))
 	return strings.HasPrefix(id, "claude-") || strings.HasPrefix(id, "gpt-")
