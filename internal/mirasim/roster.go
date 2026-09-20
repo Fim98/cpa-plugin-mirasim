@@ -27,6 +27,16 @@ type ModelRoster struct {
 	Agents  map[string][]ModelSpec `json:"agents"`
 }
 
+// PaidVariantModel reports whether a relay model ID names a "-paid" variant.
+// The official client's catalog pattern excludes them by name
+// (/^gpt-\d+(?:\.\d+)?-(?!paid$)[a-z]+$/), so they are not models a caller is
+// meant to select. Only that suffix is refused rather than the whole pattern:
+// the rest of it would also turn away any future model whose name carries a
+// digit or a second dash, which is not what the exclusion is for.
+func PaidVariantModel(id string) bool {
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(id)), "-paid")
+}
+
 func parseRoster(raw []byte) (ModelRoster, error) {
 	var envelope struct {
 		Version string                       `json:"version"`
@@ -49,6 +59,9 @@ func parseRoster(raw []byte) (ModelRoster, error) {
 				prefix = "gpt-"
 			}
 			if !strings.HasPrefix(spec.ID, prefix) || seen[spec.ID] || spec.ContextWindow <= 0 {
+				continue
+			}
+			if PaidVariantModel(spec.ID) {
 				continue
 			}
 			if spec.MaxOutput < 0 {

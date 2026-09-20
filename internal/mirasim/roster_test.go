@@ -9,6 +9,19 @@ import (
 	"time"
 )
 
+func TestParseRosterDropsPaidVariants(t *testing.T) {
+	roster, err := parseRoster([]byte(`{"version":"v2","agents":{"codex":[
+		{"id":"gpt-6-astra","contextWindow":872000},
+		{"id":"gpt-6-paid","contextWindow":872000},
+		{"id":"GPT-5.6-Paid","contextWindow":372000}]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roster.Agents["codex"]) != 1 || roster.Agents["codex"][0].ID != "gpt-6-astra" {
+		t.Fatalf("roster kept a paid variant: %#v", roster.Agents["codex"])
+	}
+}
+
 func TestRosterCacheFallbackAndIsolation(t *testing.T) {
 	storage, pub, _ := newTestStorage(t, futureJWT())
 	client := NewClient(storage)

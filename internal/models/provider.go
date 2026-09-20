@@ -185,6 +185,9 @@ func applyCatalogContext(model *pluginapi.ModelInfo, contextWindow int64) {
 // the relay lists from its own picker, so nothing servable is withheld here.
 func isExposedModel(id string) bool {
 	id = strings.ToLower(strings.TrimSpace(id))
+	if mirasim.PaidVariantModel(id) {
+		return false
+	}
 	return strings.HasPrefix(id, "claude-") || strings.HasPrefix(id, "gpt-")
 }
 

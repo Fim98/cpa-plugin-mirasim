@@ -97,6 +97,20 @@ func TestExposedModelsIncludesClaudeAndGPTCatalogEntries(t *testing.T) {
 	}
 }
 
+// The official client's catalog pattern refuses "-paid" model IDs outright, so
+// publishing one would offer a selection it never lets a user make.
+func TestExposedModelsRefusePaidVariants(t *testing.T) {
+	models := exposedModels([]mirasim.RemoteModel{
+		{ID: "gpt-6-astra"},
+		{ID: "gpt-6-paid"},
+		{ID: "GPT-5.6-Paid"},
+		{ID: "claude-opus-5-paid"},
+	})
+	if len(models) != 1 || models[0].ID != "gpt-6-astra" {
+		t.Fatalf("paid variants were exposed: %#v", models)
+	}
+}
+
 func TestExposedModelsPreferTheServedContextWindow(t *testing.T) {
 	models := exposedModels([]mirasim.RemoteModel{
 		{ID: "gpt-6-astra", MaxInputTokens: 900000},
