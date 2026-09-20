@@ -25,11 +25,13 @@ type Settings struct {
 	// browser callback. It is intentionally not persisted in auth records.
 	OAuthPublicBaseURL string `yaml:"oauth-public-base-url"`
 	// HTTP1Only asks the host transport to skip HTTP/2 negotiation for relay
-	// calls. Unset leaves the host's own default alone.
+	// calls. On by default: the official client offers only http/1.1 in its TLS
+	// ALPN, even though the relay itself will negotiate h2 when offered it.
 	HTTP1Only *bool `yaml:"http1-only"`
 	// LowercaseRelayHeaders asks the host to put relay header names on the wire
-	// in lower case rather than Go's canonical form. The host implements this by
-	// rewriting the request line, which requires HTTP/1.1.
+	// in lower case rather than Go's canonical form. On by default, because the
+	// official client spells every header lower case. The host implements this
+	// by rewriting the request line, which requires HTTP/1.1.
 	LowercaseRelayHeaders *bool `yaml:"lowercase-relay-headers"`
 }
 
@@ -99,9 +101,18 @@ func Defaults() Settings {
 		AdminURL:              firstNonEmpty(cleanURL(os.Getenv("MIRASIM_ADMIN_URL")), DefaultAdminURL),
 		ClientVersion:         firstNonEmpty(strings.TrimSpace(os.Getenv("MIRASIM_CLIENT_VERSION")), DefaultClientVersion),
 		OAuthPublicBaseURL:    cleanURL(os.Getenv("MIRASIM_OAUTH_PUBLIC_BASE_URL")),
-		HTTP1Only:             optionalBool(os.Getenv("MIRASIM_HTTP1_ONLY")),
-		LowercaseRelayHeaders: optionalBool(os.Getenv("MIRASIM_LOWERCASE_RELAY_HEADERS")),
+		HTTP1Only:             boolOrDefault(os.Getenv("MIRASIM_HTTP1_ONLY"), true),
+		LowercaseRelayHeaders: boolOrDefault(os.Getenv("MIRASIM_LOWERCASE_RELAY_HEADERS"), true),
 	}
+}
+
+// boolOrDefault honours an environment override and otherwise falls back to the
+// wire profile the official client was observed using.
+func boolOrDefault(value string, fallback bool) *bool {
+	if parsed := optionalBool(value); parsed != nil {
+		return parsed
+	}
+	return &fallback
 }
 
 func optionalBool(value string) *bool {

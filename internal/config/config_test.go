@@ -81,19 +81,28 @@ func TestDefaultsUseCurrentMirasimEndpointsAndProtocolVersion(t *testing.T) {
 	}
 }
 
-func TestWireProfileSettingsAreOffUnlessConfigured(t *testing.T) {
+// The official client offers only http/1.1 and sends lower-case header names,
+// so matching it is the default rather than something an operator opts into.
+func TestWireProfileSettingsDefaultOn(t *testing.T) {
 	t.Setenv("MIRASIM_HTTP1_ONLY", "")
 	t.Setenv("MIRASIM_LOWERCASE_RELAY_HEADERS", "")
 	settings := Parse(nil)
-	if settings.HTTP1Only != nil || settings.LowercaseRelayHeaders != nil {
-		t.Fatalf("settings = %#v", settings)
-	}
-
-	settings = Parse([]byte("http1-only: true\nlowercase-relay-headers: true\n"))
 	if settings.HTTP1Only == nil || !*settings.HTTP1Only {
 		t.Fatalf("HTTP1Only = %v", settings.HTTP1Only)
 	}
 	if settings.LowercaseRelayHeaders == nil || !*settings.LowercaseRelayHeaders {
+		t.Fatalf("LowercaseRelayHeaders = %v", settings.LowercaseRelayHeaders)
+	}
+}
+
+func TestWireProfileSettingsCanBeTurnedOff(t *testing.T) {
+	t.Setenv("MIRASIM_HTTP1_ONLY", "")
+	t.Setenv("MIRASIM_LOWERCASE_RELAY_HEADERS", "")
+	settings := Parse([]byte("http1-only: false\nlowercase-relay-headers: false\n"))
+	if settings.HTTP1Only == nil || *settings.HTTP1Only {
+		t.Fatalf("HTTP1Only = %v", settings.HTTP1Only)
+	}
+	if settings.LowercaseRelayHeaders == nil || *settings.LowercaseRelayHeaders {
 		t.Fatalf("LowercaseRelayHeaders = %v", settings.LowercaseRelayHeaders)
 	}
 }

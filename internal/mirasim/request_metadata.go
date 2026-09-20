@@ -11,8 +11,10 @@ type RelayOptions struct {
 	Collect *bool
 	Locale  string
 	// HTTP1Only and LowercaseRelayHeaders shape the outbound wire profile the
-	// host applies to relay calls. Both are off unless configured, because the
-	// resulting protocol negotiation cannot be verified from here.
+	// host applies to relay calls. Both default on: a capture of the official
+	// 0.0.336 client shows it offering only http/1.1 in its TLS ALPN and
+	// spelling every header lower case, while Go would otherwise negotiate h2
+	// and send canonical X-Mirasim-* names.
 	HTTP1Only             bool
 	LowercaseRelayHeaders bool
 }
