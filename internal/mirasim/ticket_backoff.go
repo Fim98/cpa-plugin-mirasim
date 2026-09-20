@@ -1,6 +1,7 @@
 package mirasim
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -40,7 +41,8 @@ func (e *TicketBackoffError) Unwrap() error {
 
 func (e *TicketBackoffError) StatusCode() int {
 	if e != nil {
-		if status, ok := e.cause.(interface{ StatusCode() int }); ok {
+		var status interface{ StatusCode() int }
+		if errors.As(e.cause, &status) && status != nil {
 			return status.StatusCode()
 		}
 	}
@@ -57,7 +59,8 @@ func (e *TicketBackoffError) RetryAfter() *time.Duration {
 
 func (e *TicketBackoffError) Retryable() bool {
 	if e != nil {
-		if classified, ok := e.cause.(interface{ Retryable() bool }); ok {
+		var classified interface{ Retryable() bool }
+		if errors.As(e.cause, &classified) && classified != nil {
 			return classified.Retryable()
 		}
 	}

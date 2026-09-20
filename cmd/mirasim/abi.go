@@ -48,6 +48,7 @@ import "C"
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -671,8 +672,11 @@ func abiErrorEnvelopeFromError(code string, err error) []byte {
 	if err == nil {
 		return abiErrorEnvelope(code, "")
 	}
+	// Walk the chain: a status carried by a wrapped cause still has to reach the
+	// client, or CPA reports 500 and the caller retries something it should not.
 	httpStatus := 0
-	if statusProvider, ok := err.(interface{ StatusCode() int }); ok {
+	var statusProvider interface{ StatusCode() int }
+	if errors.As(err, &statusProvider) && statusProvider != nil {
 		httpStatus = statusProvider.StatusCode()
 	}
 	raw, _ := json.Marshal(pluginabi.Envelope{OK: false, Error: &pluginabi.Error{

@@ -3,6 +3,7 @@ package mirasim
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,7 +39,8 @@ func (c *Client) ValidateRemote(ctx context.Context, hostClient pluginapi.HostHT
 	validationCtx, cancelValidation := context.WithTimeout(ctx, credentialValidationTimeout)
 	defer cancelValidation()
 	if _, errModels := c.ListModels(validationCtx, hostClient); errModels != nil {
-		if status, ok := errModels.(interface{ StatusCode() int }); ok && status.StatusCode() > 0 {
+		var status interface{ StatusCode() int }
+		if errors.As(errModels, &status) && status != nil && status.StatusCode() > 0 {
 			return fmt.Errorf("validate Mirasim OAuth credentials: upstream returned HTTP %d", status.StatusCode())
 		}
 		return fmt.Errorf("validate Mirasim OAuth credentials: %w", errModels)

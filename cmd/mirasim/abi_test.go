@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -140,5 +143,32 @@ func TestABIUnknownMethodReturnsErrorEnvelope(t *testing.T) {
 	}
 	if envelope.OK || envelope.Error == nil || envelope.Error.Code != "unknown_method" {
 		t.Fatalf("envelope = %s", raw)
+	}
+}
+
+// CPA maps http_status onto the client-visible error. A status carried by a
+// wrapped cause must still reach it, or a 429 is reported as a 500 and the
+// caller retries a limit it should be backing off from.
+func TestABIErrorEnvelopeCarriesAWrappedStatus(t *testing.T) {
+	wrapped := fmt.Errorf("mint Mirasim device ticket: %w", pluginabi.NewError("rate_limited", "slow down", http.StatusTooManyRequests))
+	var envelope pluginabi.Envelope
+	if errDecode := json.Unmarshal(abiErrorEnvelopeFromError("plugin_error", wrapped), &envelope); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if envelope.OK || envelope.Error == nil {
+		t.Fatalf("envelope = %#v", envelope)
+	}
+	if envelope.Error.HTTPStatus != http.StatusTooManyRequests {
+		t.Fatalf("http_status = %d", envelope.Error.HTTPStatus)
+	}
+}
+
+func TestABIErrorEnvelopeLeavesAStatuslessErrorAtZero(t *testing.T) {
+	var envelope pluginabi.Envelope
+	if errDecode := json.Unmarshal(abiErrorEnvelopeFromError("plugin_error", errors.New("boom")), &envelope); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if envelope.Error == nil || envelope.Error.HTTPStatus != 0 {
+		t.Fatalf("error = %#v", envelope.Error)
 	}
 }
