@@ -72,8 +72,18 @@ func (p *Provider) ResetQuota(context.Context, pluginapi.QuotaResetRequest) (plu
 // exhausted model does not read as an exhausted account.
 func Normalize(storage credentials.Storage, snapshot mirasim.QuotaSnapshot) pluginapi.QuotaFetchResponse {
 	response := pluginapi.QuotaFetchResponse{}
-	if plan := strings.TrimSpace(storage.Plan); plan != "" {
+	// /v1/limits reports whether the account is paying, which the plan claim in
+	// the token does not say on its own: a named plan can still be a trial. Pass
+	// it through as the tier so the page can tell the two apart.
+	plan := strings.TrimSpace(storage.Plan)
+	if plan != "" || snapshot.Paid != nil {
 		response.Subscription = &pluginapi.QuotaSubscription{Plan: plan}
+		if snapshot.Paid != nil {
+			response.Subscription.TierName = "free"
+			if *snapshot.Paid {
+				response.Subscription.TierName = "paid"
+			}
+		}
 	}
 
 	account := make([]pluginapi.QuotaBucket, 0, len(snapshot.Windows))

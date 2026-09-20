@@ -89,6 +89,34 @@ func TestNormalizeReportsNoBucketsWhenLimitsAreUnavailable(t *testing.T) {
 	}
 }
 
+// /v1/limits reports "paid" separately from the token's plan claim, so a free
+// account on a named plan has to be distinguishable from a paying one.
+func TestNormalizeReportsThePaidTier(t *testing.T) {
+	paid, free := true, false
+
+	response := Normalize(credentials.Storage{Plan: "pro"}, mirasim.QuotaSnapshot{Paid: &paid})
+	if response.Subscription == nil || response.Subscription.Plan != "pro" || response.Subscription.TierName != "paid" {
+		t.Fatalf("paid subscription = %#v", response.Subscription)
+	}
+
+	response = Normalize(credentials.Storage{Plan: "pro"}, mirasim.QuotaSnapshot{Paid: &free})
+	if response.Subscription == nil || response.Subscription.TierName != "free" {
+		t.Fatalf("free subscription = %#v", response.Subscription)
+	}
+
+	// Limits that say nothing about payment must not invent a tier.
+	response = Normalize(credentials.Storage{Plan: "pro"}, mirasim.QuotaSnapshot{})
+	if response.Subscription == nil || response.Subscription.TierName != "" {
+		t.Fatalf("unknown tier = %#v", response.Subscription)
+	}
+
+	// A paid flag with no plan claim still deserves a subscription entry.
+	response = Normalize(credentials.Storage{}, mirasim.QuotaSnapshot{Paid: &paid})
+	if response.Subscription == nil || response.Subscription.Plan != "" || response.Subscription.TierName != "paid" {
+		t.Fatalf("planless paid subscription = %#v", response.Subscription)
+	}
+}
+
 func TestNormalizeTreatsAnUnpublishedBudgetAsUnspent(t *testing.T) {
 	response := Normalize(credentials.Storage{}, mirasim.QuotaSnapshot{
 		Windows: []mirasim.QuotaLimitWindow{{Name: "7d", Status: "allowed"}},
