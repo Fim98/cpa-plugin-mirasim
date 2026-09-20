@@ -9,18 +9,27 @@ import (
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/mirasim"
 )
 
-func TestStaticModelsExposeClaudeAndGPTFallback(t *testing.T) {
+// An OAuth-only executor has no static models to register, and CPA skips the
+// static path for that scope regardless of what is returned here.
+func TestStaticModelsPublishNothingForAnOAuthOnlyExecutor(t *testing.T) {
 	provider := New(pluginconfig.Defaults(), mirasim.NewPool())
 	resp, errModels := provider.StaticModels(context.Background(), pluginapi.StaticModelRequest{})
 	if errModels != nil {
 		t.Fatalf("StaticModels() error = %v", errModels)
 	}
-	if resp.Provider != "mirasim" || len(resp.Models) != len(fallbackModelIDs)+6 {
+	if resp.Provider != "mirasim" || len(resp.Models) != 0 {
 		t.Fatalf("response = %#v", resp)
+	}
+}
+
+func TestFallbackCatalogCoversClaudeAndGPT(t *testing.T) {
+	models := withLongContextAliases(fallbackModels())
+	if len(models) != len(fallbackModelIDs)+6 {
+		t.Fatalf("models = %#v", models)
 	}
 	claudeCount := 0
 	gptCount := 0
-	for _, model := range resp.Models {
+	for _, model := range models {
 		if !isExposedModel(model.ID) || len(model.SupportedGenerationMethods) == 0 || model.ContextLength == 0 || model.MaxCompletionTokens == 0 {
 			t.Fatalf("incomplete model metadata: %#v", model)
 		}
@@ -42,8 +51,8 @@ func TestStaticModelsExposeClaudeAndGPTFallback(t *testing.T) {
 	if claudeCount != 13 || gptCount != 4 {
 		t.Fatalf("fallback family counts: Claude=%d GPT=%d", claudeCount, gptCount)
 	}
-	byID := make(map[string]pluginapi.ModelInfo, len(resp.Models))
-	for _, model := range resp.Models {
+	byID := make(map[string]pluginapi.ModelInfo, len(models))
+	for _, model := range models {
 		byID[model.ID] = model
 	}
 	astra := byID["gpt-6-astra"]

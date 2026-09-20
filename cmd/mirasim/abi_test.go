@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -50,21 +49,10 @@ func TestABIRegisterAndManagementRoute(t *testing.T) {
 	if errDecode := json.Unmarshal(envelope.Result, &modelResponse); errDecode != nil {
 		t.Fatalf("decode static models: %v", errDecode)
 	}
-	if len(modelResponse.Models) != 17 {
-		t.Fatalf("static models = %#v", modelResponse.Models)
-	}
-	seen := map[string]bool{}
-	for _, model := range modelResponse.Models {
-		seen[model.ID] = true
-	}
-	if !seen["gpt-6-astra"] || !seen["claude-sonnet-5[1m]"] {
-		t.Fatal("new models/selectors missing from native ABI")
-	}
-	for _, model := range modelResponse.Models {
-		id := strings.ToLower(model.ID)
-		if !strings.HasPrefix(id, "claude-") && !strings.HasPrefix(id, "gpt-") {
-			t.Fatalf("unsupported model exposed through ABI: %#v", model)
-		}
+	// Models are bound to an OAuth credential, so the static path publishes
+	// none of them and model.for_auth carries the catalog instead.
+	if modelResponse.Provider != "mirasim" || len(modelResponse.Models) != 0 {
+		t.Fatalf("static models = %#v", modelResponse)
 	}
 
 	raw, errManagement := handleABIMethod(context.Background(), pluginabi.MethodManagementRegister, []byte(`{}`))

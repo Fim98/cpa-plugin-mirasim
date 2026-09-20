@@ -115,8 +115,14 @@ func New(settings pluginconfig.Settings, pool *mirasim.Pool) *Provider {
 	return &Provider{settings: settings, pool: pool}
 }
 
+// StaticModels publishes nothing. Every Mirasim model is reachable only with an
+// OAuth credential, which is what ExecutorModelScopeOAuth declares and why CPA
+// skips static registration for this plugin entirely. Answering with the
+// fallback catalog was therefore either discarded, or — under a wider scope —
+// would advertise models no credential is bound to serve. ModelsForAuth still
+// falls back to that catalog, where a credential exists to back it.
 func (p *Provider) StaticModels(context.Context, pluginapi.StaticModelRequest) (pluginapi.ModelResponse, error) {
-	return pluginapi.ModelResponse{Provider: credentials.Provider, Models: withLongContextAliases(fallbackModels())}, nil
+	return pluginapi.ModelResponse{Provider: credentials.Provider}, nil
 }
 
 func (p *Provider) ModelsForAuth(ctx context.Context, req pluginapi.AuthModelRequest) (pluginapi.ModelResponse, error) {
