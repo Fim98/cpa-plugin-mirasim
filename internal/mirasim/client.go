@@ -26,10 +26,19 @@ import (
 )
 
 const (
-	sessionPath        = "/v1/device/session"
-	modelsPath         = "/v1/models"
-	limitsPath         = "/v1/limits"
-	accessRefreshLead  = 2 * time.Minute
+	sessionPath = "/v1/device/session"
+	modelsPath  = "/v1/models"
+	limitsPath  = "/v1/limits"
+	// accessRefreshLead is how far ahead of expiry a refresh is scheduled. The
+	// official client allows itself the same quarter hour, which is the headroom
+	// a slow or briefly failing /auth/refresh has to succeed in before the token
+	// it is replacing actually expires.
+	accessRefreshLead = 15 * time.Minute
+	// accessStaleLead is the point at which the token is too close to expiry to
+	// start a request with. It is deliberately much shorter than the scheduling
+	// lead: inside that quarter hour the token is still valid, and refusing to
+	// use it would fail requests the relay would have served.
+	accessStaleLead    = 30 * time.Second
 	ticketRefreshLead  = 2 * time.Minute
 	ticketDefaultTTL   = 10 * time.Minute
 	ticketBackoffBase  = time.Second
@@ -566,7 +575,7 @@ func (c *Client) ensureAccessTokenLocked() error {
 	}
 	// Opaque access tokens remain usable until the device-session endpoint
 	// rejects them. JWTs refresh through CPA before entering their expiry lead.
-	if c.accessExpiresAt.IsZero() || now.Before(c.accessExpiresAt.Add(-accessRefreshLead)) {
+	if c.accessExpiresAt.IsZero() || now.Before(c.accessExpiresAt.Add(-accessStaleLead)) {
 		return nil
 	}
 	c.refreshRequired = true

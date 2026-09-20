@@ -315,7 +315,7 @@ func TestDoRetriesOneUnauthorizedResponseWithFreshTicket(t *testing.T) {
 }
 
 func TestDoDelegatesAccessTokenRefreshToHost(t *testing.T) {
-	storage, _, _ := newTestStorage(t, jwtWithExpiry(time.Now().Add(time.Minute)))
+	storage, _, _ := newTestStorage(t, jwtWithExpiry(time.Now().Add(10*time.Second)))
 	client := NewClient(storage)
 	hostCalls := 0
 	host := fakeHostClient{do: func(_ context.Context, _ pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
@@ -325,7 +325,7 @@ func TestDoDelegatesAccessTokenRefreshToHost(t *testing.T) {
 
 	_, errDo := client.Do(context.Background(), host, http.MethodPost, "/v1/messages", nil, nil, []byte(`{"model":"claude-sonnet-5"}`))
 	if errDo == nil {
-		t.Fatal("Do() accepted an access token inside the refresh lead")
+		t.Fatal("Do() accepted an access token about to expire")
 	}
 	statusErr, ok := errDo.(interface{ StatusCode() int })
 	if !ok || statusErr.StatusCode() != http.StatusUnauthorized {
@@ -333,6 +333,30 @@ func TestDoDelegatesAccessTokenRefreshToHost(t *testing.T) {
 	}
 	if hostCalls != 0 {
 		t.Fatalf("host calls = %d, want no relay request before CPA refresh", hostCalls)
+	}
+}
+
+func TestATokenAwaitingItsScheduledRefreshStillServesRequests(t *testing.T) {
+	// A refresh is scheduled a quarter hour ahead of expiry. The token is valid
+	// for every second of that window, so a request inside it is served rather
+	// than failed while CPA gets around to the refresh.
+	expiry := time.Now().Add(accessRefreshLead - time.Minute)
+	storage, _, _ := newTestStorage(t, jwtWithExpiry(expiry))
+	client := NewClient(storage)
+	host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		if mustRequestPath(t, req.URL) == sessionPath {
+			return pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"ticket":"t","expiresIn":900}`)}, nil
+		}
+		return pluginapi.HTTPResponse{StatusCode: 200}, nil
+	}}
+	if _, errDo := client.Do(context.Background(), host, http.MethodPost, "/v1/messages", nil, nil, []byte("{}")); errDo != nil {
+		t.Fatalf("Do() error = %v, want a valid token to be used", errDo)
+	}
+	// It is inside the lead, so the refresh is already due even though the token
+	// remains usable for another fourteen minutes.
+	now := time.Now()
+	if next := client.NextRefreshAfter(now); next.After(now) {
+		t.Fatalf("refresh scheduled %v out, want it already due", next.Sub(now))
 	}
 }
 
