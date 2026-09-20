@@ -1183,7 +1183,127 @@ func (e *StatusError) Error() string {
 	if len(message) > maxErrorMessage {
 		message = message[:maxErrorMessage] + "..."
 	}
+	if cause := e.LimitCause(); cause != nil {
+		return fmt.Sprintf("Mirasim upstream returned HTTP %d (%s): %s", e.status, cause.Describe(), message)
+	}
 	return fmt.Sprintf("Mirasim upstream returned HTTP %d: %s", e.status, message)
+}
+
+// Limit cause names, spelled as the official client reports them.
+const (
+	LimitRegionBlocked   = "region_blocked"
+	LimitPlanRequired    = "plan_required"
+	LimitThrottled       = "throttled"
+	LimitCreditExhausted = "credit_exhausted"
+	LimitCauseUnknown    = "unknown"
+)
+
+// LimitCause explains a 429. The status alone cannot distinguish a spent budget
+// from a plan that never permitted the call, and the two want opposite
+// responses: one is worth waiting out, the other never clears on its own.
+type LimitCause struct {
+	Cause   string
+	Window  string
+	ResetAt *time.Time
+}
+
+func (c *LimitCause) Describe() string {
+	if c == nil {
+		return ""
+	}
+	text := strings.ReplaceAll(c.Cause, "_", " ")
+	if c.Window != "" {
+		text += " in " + c.Window
+	}
+	if c.ResetAt != nil {
+		text += ", resets " + c.ResetAt.UTC().Format(time.RFC3339)
+	}
+	return text
+}
+
+// LimitCause classifies a rate-limited response the way the official client
+// does, and reports nothing for any other status.
+func (e *StatusError) LimitCause() *LimitCause {
+	if e == nil || e.status != http.StatusTooManyRequests {
+		return nil
+	}
+	spent := spentQuotaWindow(e.headers)
+	cause := LimitCauseUnknown
+	switch errorType := upstreamErrorType(e.body); {
+	case errorType == "shared_quota_unavailable":
+		cause = LimitRegionBlocked
+	case errorType == "credit_exhausted_shared" && spent == nil:
+		cause = LimitPlanRequired
+	case errorType == "rate_limited" && spent == nil:
+		cause = LimitThrottled
+	case spent != nil:
+		cause = LimitCreditExhausted
+	}
+	if cause != LimitCreditExhausted {
+		// Only an exhausted budget has a window that clears; naming one for a
+		// blocked region or an absent plan would promise a wait that never ends.
+		return &LimitCause{Cause: cause}
+	}
+	return &LimitCause{Cause: cause, Window: spent.name, ResetAt: spent.resetAt}
+}
+
+// upstreamErrorType reads error.type out of a relay error body, which is the
+// only field that separates one 429 from another.
+func upstreamErrorType(body []byte) string {
+	var payload struct {
+		Error struct {
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Error.Type)
+}
+
+type quotaWindowState struct {
+	name    string
+	resetAt *time.Time
+}
+
+// spentQuotaWindow returns the exhausted account window whose reset is furthest
+// out, matching the client's choice of the one that governs the wait.
+func spentQuotaWindow(headers http.Header) *quotaWindowState {
+	var spent *quotaWindowState
+	for _, name := range []string{"5h", "7d"} {
+		raw := firstHeaderValue(headers, "anthropic-ratelimit-unified-"+name+"-utilization")
+		if raw == "" {
+			continue
+		}
+		utilization, errParse := strconv.ParseFloat(raw, 64)
+		if errParse != nil || utilization < 1 {
+			continue
+		}
+		window := &quotaWindowState{
+			name:    name,
+			resetAt: resetTime(firstHeaderValue(headers, "anthropic-ratelimit-unified-"+name+"-reset")),
+		}
+		if spent == nil || laterReset(window.resetAt, spent.resetAt) {
+			spent = window
+		}
+	}
+	return spent
+}
+
+func laterReset(candidate, current *time.Time) bool {
+	if candidate == nil {
+		return false
+	}
+	return current == nil || candidate.After(*current)
+}
+
+// firstHeaderValue takes the leading comma-separated entry, as the client does.
+func firstHeaderValue(headers http.Header, name string) string {
+	value := headers.Get(name)
+	if index := strings.IndexByte(value, ','); index >= 0 {
+		value = value[:index]
+	}
+	return strings.TrimSpace(value)
 }
 
 func (e *StatusError) StatusCode() int {
