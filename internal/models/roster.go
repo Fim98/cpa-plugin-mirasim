@@ -29,8 +29,8 @@ func applyRoster(models []pluginapi.ModelInfo, roster mirasim.ModelRoster) {
 		if spec.Label != "" {
 			m.DisplayName = spec.Label
 		}
-		// CPA 7.2.146 has no auto-compaction-ratio field. Do not mislabel it as
-		// the model's context limit; compaction remains the caller's responsibility.
+		// CPA model metadata has no auto-compaction-ratio field. Do not mislabel it
+		// as the model's context limit; compaction remains the caller's responsibility.
 		levels := []string{}
 		seen := map[string]bool{}
 		for _, level := range spec.Effort {
