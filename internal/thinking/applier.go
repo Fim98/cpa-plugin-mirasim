@@ -337,7 +337,7 @@ func applyCodex(body []byte, config pluginapi.ThinkingConfig) ([]byte, error) {
 }
 
 // adaptiveClaude reports whether the model takes the effort form. Every Claude
-// model the relay publishes is adaptive in the inspected 0.0.310 client
+// model the relay publishes is adaptive in the inspected 0.0.336 client
 // catalog, so a model without a roster entry — including one released after
 // this build — keeps that form, and only an explicit roster entry moves a model
 // to the token-budget form.

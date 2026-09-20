@@ -56,7 +56,7 @@ func TestFallbackCatalogCoversClaudeAndGPT(t *testing.T) {
 		byID[model.ID] = model
 	}
 	astra := byID["gpt-6-astra"]
-	if astra.ContextLength != 1050000 || astra.MaxCompletionTokens != 128000 || astra.Thinking == nil {
+	if astra.ContextLength != 872000 || astra.MaxCompletionTokens != 128000 || astra.Thinking == nil {
 		t.Fatalf("Astra metadata=%+v", astra)
 	}
 	sonnet := byID["claude-sonnet-5"]
@@ -114,7 +114,7 @@ func TestExposedModelsPreferTheServedContextWindow(t *testing.T) {
 	if aliases := withLongContextAliases(models); len(aliases) != 3 {
 		t.Fatalf("a 400k model was still offered a [1m] selector: %#v", aliases)
 	}
-	if models[2].ContextLength != 872000 {
+	if models[2].ContextLength != 372000 {
 		t.Fatalf("missing context window erased static metadata: %#v", models[2])
 	}
 }
@@ -134,7 +134,7 @@ func TestModelInfoPreservesLiveIdentityAndAddsKnownCapabilities(t *testing.T) {
 	if model.Object != "custom-model" || model.Created != 42 || model.OwnedBy != "relay-owner" {
 		t.Fatalf("live identity fields were replaced: %#v", model)
 	}
-	if model.Type != "openai" || model.DisplayName != "GPT 5.6 Sol" || model.ContextLength != 872000 || model.MaxCompletionTokens != 128000 || model.Thinking == nil {
+	if model.Type != "openai" || model.DisplayName != "GPT 5.6 Sol" || model.ContextLength != 372000 || model.MaxCompletionTokens != 128000 || model.Thinking == nil {
 		t.Fatalf("known GPT metadata was not enriched: %#v", model)
 	}
 	wantLevels := []string{"low", "medium", "high", "xhigh", "max", "ultra"}
