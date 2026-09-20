@@ -725,6 +725,32 @@ func TestParseModelCatalogKeepsTheServedContextWindow(t *testing.T) {
 	}
 }
 
+func TestParseModelCatalogOffersEachServableModelOnce(t *testing.T) {
+	models, errParse := ParseModelCatalog([]byte(`{"data":[
+		{"id":"claude-haiku-4-5"},
+		{"id":"claude-haiku-4-5-20251001"},
+		{"id":"claude-legacy-20240620"},
+		{"id":"*"},
+		{"id":"gpt-4o-mini"},
+		{"id":"gpt-4o-mini-openrouter"},
+		{"id":"openrouter/claude-sonnet-5"},
+		{"id":"gpt-6-astra"}
+	]}`))
+	if errParse != nil {
+		t.Fatalf("ParseModelCatalog() error = %v", errParse)
+	}
+	var ids []string
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	// The dated twin goes only because the plain ID is served beside it; a dated
+	// ID with no plain counterpart is the only way to reach that model.
+	want := []string{"claude-haiku-4-5", "claude-legacy-20240620", "gpt-6-astra"}
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Fatalf("catalog = %v, want %v", ids, want)
+	}
+}
+
 func TestPrepareHeadersDropsClientCredentials(t *testing.T) {
 	auth := http.Header{"Authorization": []string{"Bearer ticket"}, "X-Mirasim-Enc": []string{"sealed"}}
 	headers := prepareHeaders(http.Header{

@@ -14,6 +14,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -774,6 +775,17 @@ type RemoteModel struct {
 	MaxInputTokens int64 `json:"max_input_tokens"`
 }
 
+// datedModelSuffix matches the release date a catalog appends to a model's
+// dated twin, as in claude-haiku-4-5-20251001.
+var datedModelSuffix = regexp.MustCompile(`-20\d{6}$`)
+
+// reservedCatalogIDs are entries the catalog lists that name no servable model.
+var reservedCatalogIDs = map[string]struct{}{
+	"*":                      {},
+	"gpt-4o-mini":            {},
+	"gpt-4o-mini-openrouter": {},
+}
+
 func ParseModelCatalog(raw []byte) ([]RemoteModel, error) {
 	var payload struct {
 		Data   []json.RawMessage `json:"data"`
@@ -786,37 +798,73 @@ func ParseModelCatalog(raw []byte) ([]RemoteModel, error) {
 	if len(items) == 0 {
 		items = payload.Models
 	}
-	models := make([]RemoteModel, 0, len(items))
-	seen := make(map[string]struct{}, len(items))
+	parsed := make([]RemoteModel, 0, len(items))
 	for _, item := range items {
-		var model RemoteModel
-		if errObject := json.Unmarshal(item, &model); errObject != nil || strings.TrimSpace(model.ID) == "" {
-			var id string
-			if errString := json.Unmarshal(item, &id); errString != nil {
-				continue
-			}
-			model.ID = id
+		if model, usable := parseCatalogEntry(item); usable {
+			parsed = append(parsed, model)
 		}
-		model.ID = strings.TrimSpace(model.ID)
-		if model.ID == "" {
-			continue
-		}
-		if _, exists := seen[model.ID]; exists {
-			continue
-		}
-		seen[model.ID] = struct{}{}
-		if model.Object == "" {
-			model.Object = "model"
-		}
-		if model.MaxInputTokens < 0 {
-			model.MaxInputTokens = 0
-		}
-		models = append(models, model)
 	}
+	models := servableModels(parsed)
 	if len(models) == 0 {
 		return nil, fmt.Errorf("Mirasim model catalog contains no models")
 	}
 	return models, nil
+}
+
+// parseCatalogEntry reads the two shapes a catalog entry takes, a bare ID or an
+// object, and normalizes the fields the plugin reads from it.
+func parseCatalogEntry(item json.RawMessage) (RemoteModel, bool) {
+	var model RemoteModel
+	if errObject := json.Unmarshal(item, &model); errObject != nil || strings.TrimSpace(model.ID) == "" {
+		var id string
+		if errString := json.Unmarshal(item, &id); errString != nil {
+			return RemoteModel{}, false
+		}
+		model.ID = id
+	}
+	model.ID = strings.TrimSpace(model.ID)
+	if model.ID == "" {
+		return RemoteModel{}, false
+	}
+	if model.Object == "" {
+		model.Object = "model"
+	}
+	if model.MaxInputTokens < 0 {
+		model.MaxInputTokens = 0
+	}
+	return model, true
+}
+
+// servableModels keeps the entries the account can actually address, the same
+// way the official client narrows the same response. A reserved placeholder and
+// a namespaced ID name no model, and a dated twin such as
+// claude-haiku-4-5-20251001 is dropped when the plain ID it duplicates is
+// served beside it, so a caller is not offered the same model twice.
+func servableModels(parsed []RemoteModel) []RemoteModel {
+	undated := make(map[string]struct{}, len(parsed))
+	for _, model := range parsed {
+		if !strings.Contains(model.ID, "/") && !datedModelSuffix.MatchString(model.ID) {
+			undated[model.ID] = struct{}{}
+		}
+	}
+	models := make([]RemoteModel, 0, len(parsed))
+	seen := make(map[string]struct{}, len(parsed))
+	for _, model := range parsed {
+		if _, duplicate := seen[model.ID]; duplicate {
+			continue
+		}
+		if _, reserved := reservedCatalogIDs[model.ID]; reserved || strings.Contains(model.ID, "/") {
+			continue
+		}
+		if datedModelSuffix.MatchString(model.ID) {
+			if _, twin := undated[datedModelSuffix.ReplaceAllString(model.ID, "")]; twin {
+				continue
+			}
+		}
+		seen[model.ID] = struct{}{}
+		models = append(models, model)
+	}
+	return models
 }
 
 type QuotaSnapshot struct {
