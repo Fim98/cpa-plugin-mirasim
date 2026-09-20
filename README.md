@@ -41,7 +41,7 @@ plugins:
       oauth-public-base-url: https://cpa.example.com
 ```
 
-Optional settings are `relay-url` (default `https://relay.mirasim.ai`), `admin-url` (default `https://auth.mirasim.ai`), and `client-version` (default `0.0.310`). Explicit configuration overrides the corresponding `MIRASIM_RELAY_URL`, `MIRASIM_ADMIN_URL`, `MIRASIM_CLIENT_VERSION`, and `MIRASIM_OAUTH_PUBLIC_BASE_URL` environment variables.
+Optional settings are `relay-url` (default `https://relay.mirasim.ai`), `admin-url` (default `https://auth.mirasim.ai`), and `client-version` (default `0.0.336`). Explicit configuration overrides the corresponding `MIRASIM_RELAY_URL`, `MIRASIM_ADMIN_URL`, `MIRASIM_CLIENT_VERSION`, and `MIRASIM_OAUTH_PUBLIC_BASE_URL` environment variables.
 
 Two further settings shape how relay calls appear on the wire, and both are on by default because they match the official desktop client. `http1-only` skips HTTP/2 negotiation: a packet capture of the 0.0.336 client shows it offering only `http/1.1` in its TLS ALPN, even though `relay.mirasim.ai` will negotiate `h2` when a client offers it — so Go's default transport would otherwise speak a protocol the real client never uses. `lowercase-relay-headers` puts header names on the wire in lower case instead of Go's canonical `X-Mirasim-Device` form, matching the client, which spells every header lower case and lower-cases them again before deciding what to seal; CPA implements this by rewriting the request line, so it also forces HTTP/1.1. Their environment defaults are `MIRASIM_HTTP1_ONLY` and `MIRASIM_LOWERCASE_RELAY_HEADERS`, and setting either to `false` restores Go's own behaviour. Neither changes what is signed.
 

@@ -21,7 +21,7 @@ func TestOldOAuthSnapshotUsesRunningClientVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, version := range []string{"0.0.310", "custom-version"} {
+	for _, version := range []string{"0.0.336", "custom-version"} {
 		settings := pluginconfig.Defaults()
 		settings.ClientVersion = version
 		parsed, err := Parse(old.JSON(), settings)
