@@ -85,6 +85,7 @@ type abiCapabilities struct {
 	ThinkingApplier       bool                         `json:"thinking_applier"`
 	CommandLinePlugin     bool                         `json:"command_line_plugin"`
 	ManagementAPI         bool                         `json:"management_api"`
+	QuotaProvider         bool                         `json:"quota_provider"`
 }
 
 type abiIdentifierResponse struct {
@@ -129,6 +130,16 @@ type abiThinkingApplyRequest struct {
 
 type abiManagementRequest struct {
 	pluginapi.ManagementRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type abiQuotaFetchRequest struct {
+	pluginapi.QuotaFetchRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type abiQuotaResetRequest struct {
+	pluginapi.QuotaResetRequest
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
@@ -271,7 +282,7 @@ func handleABIMethod(ctx context.Context, method string, request []byte) ([]byte
 		return nil, errPlugin
 	}
 	switch method {
-	case pluginabi.MethodAuthIdentifier, pluginabi.MethodExecutorIdentifier, pluginabi.MethodThinkingIdentifier:
+	case pluginabi.MethodAuthIdentifier, pluginabi.MethodExecutorIdentifier, pluginabi.MethodThinkingIdentifier, pluginabi.MethodQuotaIdentifier:
 		return abiOKEnvelope(abiIdentifierResponse{Identifier: p.Identifier()})
 	case pluginabi.MethodAuthParse:
 		var req pluginapi.AuthParseRequest
@@ -404,6 +415,31 @@ func handleABIMethod(ctx context.Context, method string, request []byte) ([]byte
 		}
 		resp, errCall := p.HandleManagement(ctx, rpcReq.ManagementRequest, abiHostServices{callbackID: rpcReq.HostCallbackID})
 		return abiOKEnvelopeWithError(resp, errCall)
+	case pluginabi.MethodQuotaDescribe:
+		var req pluginapi.QuotaDescribeRequest
+		if errDecode := json.Unmarshal(request, &req); errDecode != nil {
+			return nil, errDecode
+		}
+		resp, errCall := p.DescribeQuota(ctx, req)
+		return abiOKEnvelopeWithError(resp, errCall)
+	case pluginabi.MethodQuotaFetch:
+		var rpcReq abiQuotaFetchRequest
+		if errDecode := json.Unmarshal(request, &rpcReq); errDecode != nil {
+			return nil, errDecode
+		}
+		req := rpcReq.QuotaFetchRequest
+		req.HTTPClient = abiHostHTTPClient{callbackID: rpcReq.HostCallbackID}
+		resp, errCall := p.FetchQuota(ctx, req)
+		return abiOKEnvelopeWithError(resp, errCall)
+	case pluginabi.MethodQuotaReset:
+		var rpcReq abiQuotaResetRequest
+		if errDecode := json.Unmarshal(request, &rpcReq); errDecode != nil {
+			return nil, errDecode
+		}
+		req := rpcReq.QuotaResetRequest
+		req.HTTPClient = abiHostHTTPClient{callbackID: rpcReq.HostCallbackID}
+		resp, errCall := p.ResetQuota(ctx, req)
+		return abiOKEnvelopeWithError(resp, errCall)
 	default:
 		return abiErrorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
@@ -436,6 +472,7 @@ func handleRegister(request []byte) ([]byte, error) {
 			ThinkingApplier:       built.Capabilities.ThinkingApplier != nil,
 			CommandLinePlugin:     built.Capabilities.CommandLinePlugin != nil,
 			ManagementAPI:         built.Capabilities.ManagementAPI != nil,
+			QuotaProvider:         built.Capabilities.QuotaProvider != nil,
 		},
 	})
 }

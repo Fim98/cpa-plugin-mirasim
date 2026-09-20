@@ -27,7 +27,7 @@ func TestABIRegisterAndManagementRoute(t *testing.T) {
 	if errDecode := json.Unmarshal(envelope.Result, &registration); errDecode != nil {
 		t.Fatalf("decode registration: %v", errDecode)
 	}
-	if registration.SchemaVersion != pluginabi.SchemaVersion || !registration.Capabilities.ManagementAPI || !registration.Capabilities.Executor || !registration.Capabilities.ThinkingApplier {
+	if registration.SchemaVersion != pluginabi.SchemaVersion || !registration.Capabilities.ManagementAPI || !registration.Capabilities.Executor || !registration.Capabilities.ThinkingApplier || !registration.Capabilities.QuotaProvider {
 		t.Fatalf("registration = %#v", registration)
 	}
 
@@ -83,6 +83,55 @@ func TestABIRegisterAndManagementRoute(t *testing.T) {
 	}
 	if len(management.Resources) != 2 || management.Resources[0].Path != "/oauth/start" || management.Resources[1].Path != "/oauth/callback" {
 		t.Fatalf("management resources = %#v", management.Resources)
+	}
+}
+
+func TestABIQuotaProviderAnswersDescribeAndIdentifier(t *testing.T) {
+	defer MirasimPluginShutdown()
+	if _, errRegister := handleABIMethod(context.Background(), pluginabi.MethodPluginRegister, []byte(`{}`)); errRegister != nil {
+		t.Fatal(errRegister)
+	}
+
+	var envelope pluginabi.Envelope
+	raw, errIdentifier := handleABIMethod(context.Background(), pluginabi.MethodQuotaIdentifier, nil)
+	if errIdentifier != nil {
+		t.Fatalf("quota identifier error = %v", errIdentifier)
+	}
+	if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil || !envelope.OK {
+		t.Fatalf("quota identifier envelope = %s, error = %v", raw, errDecode)
+	}
+	var identifier abiIdentifierResponse
+	if errDecode := json.Unmarshal(envelope.Result, &identifier); errDecode != nil || identifier.Identifier != "mirasim" {
+		t.Fatalf("identifier = %#v, error = %v", identifier, errDecode)
+	}
+
+	raw, errDescribe := handleABIMethod(context.Background(), pluginabi.MethodQuotaDescribe, []byte(`{}`))
+	if errDescribe != nil {
+		t.Fatalf("quota describe error = %v", errDescribe)
+	}
+	if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil || !envelope.OK {
+		t.Fatalf("quota describe envelope = %s, error = %v", raw, errDecode)
+	}
+	var describe pluginapi.QuotaDescribeResponse
+	if errDecode := json.Unmarshal(envelope.Result, &describe); errDecode != nil {
+		t.Fatalf("decode quota describe: %v", errDecode)
+	}
+	if describe.SupportsReset || len(describe.SupportedProviders) != 1 || describe.SupportedProviders[0] != "mirasim" {
+		t.Fatalf("describe = %#v", describe)
+	}
+
+	// Reset must answer over the ABI instead of failing the call, so the page
+	// can say the account has no reset route.
+	raw, errReset := handleABIMethod(context.Background(), pluginabi.MethodQuotaReset, []byte(`{}`))
+	if errReset != nil {
+		t.Fatalf("quota reset error = %v", errReset)
+	}
+	if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil || !envelope.OK {
+		t.Fatalf("quota reset envelope = %s, error = %v", raw, errDecode)
+	}
+	var reset pluginapi.QuotaResetResponse
+	if errDecode := json.Unmarshal(envelope.Result, &reset); errDecode != nil || reset.Success {
+		t.Fatalf("reset = %#v, error = %v", reset, errDecode)
 	}
 }
 

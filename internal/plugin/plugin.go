@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/management"
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/mirasim"
 	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/models"
+	"github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/quota"
 	thinkingpkg "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/thinking"
 )
 
@@ -20,6 +21,7 @@ type MirasimPlugin struct {
 	executor   *executor.Executor
 	management *management.Handler
 	thinking   *thinkingpkg.Applier
+	quota      *quota.Provider
 }
 
 func Build(configYAML []byte) pluginapi.Plugin {
@@ -32,6 +34,7 @@ func Build(configYAML []byte) pluginapi.Plugin {
 		executor:   executor.New(settings, pool),
 		management: management.New(settings, pool, authProvider),
 		thinking:   thinkingpkg.NewApplier(),
+		quota:      quota.New(settings, pool),
 	}
 	return pluginapi.Plugin{
 		Metadata: pluginapi.Metadata{
@@ -58,6 +61,7 @@ func Build(configYAML []byte) pluginapi.Plugin {
 			ThinkingApplier:       p,
 			CommandLinePlugin:     p,
 			ManagementAPI:         p,
+			QuotaProvider:         p,
 		},
 	}
 }
@@ -124,9 +128,22 @@ func (p *MirasimPlugin) HandleManagement(ctx context.Context, req pluginapi.Mana
 	return p.management.HandleWithHost(ctx, req, host)
 }
 
+func (p *MirasimPlugin) DescribeQuota(ctx context.Context, req pluginapi.QuotaDescribeRequest) (pluginapi.QuotaDescribeResponse, error) {
+	return p.quota.DescribeQuota(ctx, req)
+}
+
+func (p *MirasimPlugin) FetchQuota(ctx context.Context, req pluginapi.QuotaFetchRequest) (pluginapi.QuotaFetchResponse, error) {
+	return p.quota.FetchQuota(ctx, req)
+}
+
+func (p *MirasimPlugin) ResetQuota(ctx context.Context, req pluginapi.QuotaResetRequest) (pluginapi.QuotaResetResponse, error) {
+	return p.quota.ResetQuota(ctx, req)
+}
+
 var _ pluginapi.AuthProvider = (*MirasimPlugin)(nil)
 var _ pluginapi.ModelProvider = (*MirasimPlugin)(nil)
 var _ pluginapi.ProviderExecutor = (*MirasimPlugin)(nil)
 var _ pluginapi.ThinkingApplier = (*MirasimPlugin)(nil)
 var _ pluginapi.CommandLinePlugin = (*MirasimPlugin)(nil)
 var _ pluginapi.ManagementAPI = (*MirasimPlugin)(nil)
+var _ pluginapi.QuotaProvider = (*MirasimPlugin)(nil)

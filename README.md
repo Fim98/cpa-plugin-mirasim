@@ -108,13 +108,24 @@ CPA Responses compact requests use `/v1/responses/compact`, including the `/back
 
 ## Quota and client validation
 
-With CPA Management API authentication, query:
+The plugin registers as a CPA quota provider, so a Mirasim credential reports
+`supports_quota` and a stock Management Center renders it on its own quota page.
+The same data is available over the Management API:
+
+```text
+POST /v0/management/quota/fetch                 {"auth_index": "<runtime-auth-index>"}
+GET  /v0/management/plugins/mirasim/quota?auth_index=<runtime-auth-index>
+```
+
+Account-wide windows and model-scoped ones such as `7d_fable` are grouped separately, so one spent model does not read as a spent account. Resetting is reported as unsupported because Mirasim publishes limits and offers no route that clears them.
+
+The plugin's own route remains available:
 
 ```text
 GET /v0/management/mirasim/quota?auth_index=<runtime-auth-index>
 ```
 
-The `auth_index` parameter can be omitted when exactly one Mirasim account is loaded. Quotas come only from `GET /v1/limits`. HTTP 404/405 reports unavailable data; quota checks never trigger inference. Utilization is rounded once to one decimal and then saturates at 99%, matching the official client. Arbitrary windows, including `7d_fable`, are supported. For quota cards in Management Center, build the companion panel with `.\scripts\build-management-center.ps1`; see [panel setup](management-center/README.md) for deployment. The plugin ZIP does not include this panel or the OAuth bridge.
+The `auth_index` parameter can be omitted there when exactly one Mirasim account is loaded. Quotas come only from `GET /v1/limits`. HTTP 404/405 reports unavailable data; quota checks never trigger inference. Utilization is rounded once to one decimal and then saturates at 99%, matching the official client. Arbitrary windows, including `7d_fable`, are supported. For quota cards in Management Center, build the companion panel with `.\scripts\build-management-center.ps1`; see [panel setup](management-center/README.md) for deployment. The plugin ZIP does not include this panel or the OAuth bridge.
 
 Validate inference with an actual Claude Code or Codex client and correlate the result with CPA logs. A minimal hand-written Messages request can fail even when the real client works. Model catalog presence does not guarantee upstream capacity.
 
