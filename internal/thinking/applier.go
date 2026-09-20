@@ -58,6 +58,12 @@ func (e *ConfigError) Error() string   { return e.Message }
 func (e *ConfigError) StatusCode() int { return http.StatusBadRequest }
 
 // Applier exposes Mirasim's provider-specific thinking shapes to CPA.
+//
+// CPA reaches a registered applier only from its own built-in executors, and it
+// discards any error one returns, so a Mirasim request never arrives here: the
+// executor calls ApplyForWire directly, where a rejected control can still
+// answer 400. This stays declared so the shape is already in place if the host
+// ever consults appliers on the plugin executor path too.
 type Applier struct{}
 
 func NewApplier() *Applier { return &Applier{} }

@@ -104,6 +104,8 @@ The official client's `ultra` means `max` plus client workflow orchestration. Th
 
 Both mounts share one effort ladder: `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`. An effort outside it, including `minimal` and `off`, returns HTTP 400 naming the ladder rather than being forwarded for the relay to reject. The official client's wider list covers agents this plugin does not speak for.
 
+That refusal comes from the executor, which is the only path a Mirasim request takes. The plugin also registers a thinking applier, but CPA consults registered appliers only from its built-in executors, and it discards an error one returns. Nothing here depends on it being reached; it is declared so the shape stays available if that path ever widens.
+
 ## Codex compaction
 
 CPA Responses compact requests use `/v1/responses/compact`, including the `/backend-api/codex/responses/compact` alias. This path accepts non-streaming Responses input/output and preserves opaque compaction items. Ordinary Responses completions retain their SSE handling.
