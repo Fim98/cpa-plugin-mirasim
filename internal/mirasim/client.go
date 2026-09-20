@@ -994,7 +994,7 @@ func QuotaFromLimits(raw []byte, observedAt time.Time) (QuotaSnapshot, error) {
 		}
 		if window.Budget > 0 {
 			used := quotaUsedPercent(window.Used / window.Budget * 100)
-			remaining := clampPercent(100 - used)
+			remaining := roundPercent(100 - used)
 			window.UsedPercent = &used
 			window.RemainingPercent = &remaining
 			switch {
@@ -1041,17 +1041,21 @@ func quotaStatus(windows []QuotaLimitWindow) string {
 	return status
 }
 
-// Match the official UI: round to one decimal, then saturate at 99%.
+// Match the official client: round to one decimal, then saturate at 99%.
 func quotaUsedPercent(value float64) float64 {
-	value = math.Round(clampPercent(value)*10) / 10
+	value = roundPercent(value)
 	if value >= 99 {
 		return 100
 	}
 	return value
 }
 
-func clampPercent(value float64) float64 {
-	return math.Max(0, math.Min(100, math.Round(value*100)/100))
+// roundPercent rounds a percentage once. Rounding to two decimals first and
+// then to one carries a value such as 79.9495 up two steps to 80.0 instead of
+// down to 79.9, which reports a tenth the account has not spent and can cross
+// a status threshold on the way.
+func roundPercent(value float64) float64 {
+	return math.Max(0, math.Min(100, math.Round(value*10)/10))
 }
 
 func resetTimeJSON(raw json.RawMessage) *time.Time {

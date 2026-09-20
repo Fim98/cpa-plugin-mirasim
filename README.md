@@ -112,7 +112,7 @@ With CPA Management API authentication, query:
 GET /v0/management/mirasim/quota?auth_index=<runtime-auth-index>
 ```
 
-The `auth_index` parameter can be omitted when exactly one Mirasim account is loaded. Quotas come only from `GET /v1/limits`. HTTP 404/405 reports unavailable data; quota checks never trigger inference. Utilization is rounded to one decimal and saturates at 99%, matching the official client. Arbitrary windows, including `7d_fable`, are supported. For quota cards in Management Center, build the companion panel with `.\scripts\build-management-center.ps1`; see [panel setup](management-center/README.md) for deployment. The plugin ZIP does not include this panel or the OAuth bridge.
+The `auth_index` parameter can be omitted when exactly one Mirasim account is loaded. Quotas come only from `GET /v1/limits`. HTTP 404/405 reports unavailable data; quota checks never trigger inference. Utilization is rounded once to one decimal and then saturates at 99%, matching the official client. Arbitrary windows, including `7d_fable`, are supported. For quota cards in Management Center, build the companion panel with `.\scripts\build-management-center.ps1`; see [panel setup](management-center/README.md) for deployment. The plugin ZIP does not include this panel or the OAuth bridge.
 
 Validate inference with an actual Claude Code or Codex client and correlate the result with CPA logs. A minimal hand-written Messages request can fail even when the real client works. Model catalog presence does not guarantee upstream capacity.
 

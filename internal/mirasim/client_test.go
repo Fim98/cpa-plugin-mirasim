@@ -205,7 +205,9 @@ func TestQuotaThresholdAndArbitraryWindows(t *testing.T) {
 	for _, tt := range []struct {
 		used, want float64
 		status     string
-	}{{98.94, 98.9, "warning"}, {98.96, 100, "limit_reached"}, {99, 100, "limit_reached"}} {
+		// 79.9495 is the case a second rounding used to carry to 80.0, which both
+		// reported a tenth the account had not spent and crossed into warning.
+	}{{98.94, 98.9, "warning"}, {98.96, 100, "limit_reached"}, {99, 100, "limit_reached"}, {79.9495, 79.9, "allowed"}} {
 		q, err := QuotaFromLimits([]byte(fmt.Sprintf(`{"windows":[{"name":"7d_fable","budget":100,"used":%v,"model_scoped":true}]}`, tt.used)), time.Now())
 		if err != nil || len(q.Windows) != 1 || *q.Windows[0].UsedPercent != tt.want || q.Windows[0].Status != tt.status || !q.Windows[0].ModelScoped {
 			t.Fatalf("q=%+v err=%v", q, err)
