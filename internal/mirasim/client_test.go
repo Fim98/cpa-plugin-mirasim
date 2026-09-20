@@ -725,6 +725,56 @@ func TestParseModelCatalogKeepsTheServedContextWindow(t *testing.T) {
 	}
 }
 
+func TestRelayWithoutDeviceSessionsIsServedAndLeftAlone(t *testing.T) {
+	for _, tt := range []struct {
+		status int
+		quiet  time.Duration
+	}{{http.StatusNotFound, ticketRouteAbsentQuiet}, {http.StatusNotImplemented, ticketUnimplementedQuiet}} {
+		t.Run(fmt.Sprint(tt.status), func(t *testing.T) {
+			accessToken := futureJWT()
+			storage, publicKey, relayPrivate := newTestStorage(t, accessToken)
+			client := NewClient(storage)
+			now := time.Now()
+			client.now = func() time.Time { return now }
+			mints, relayed := 0, 0
+			host := fakeHostClient{do: func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+				if mustRequestPath(t, req.URL) == sessionPath {
+					mints++
+					return pluginapi.HTTPResponse{StatusCode: tt.status, Body: []byte(`{"error":"no device sessions here"}`)}, nil
+				}
+				relayed++
+				// The request is still signed; the access token stands in for the
+				// ticket as both bearer and signed credential.
+				assertSealedRelayRequest(t, publicKey, relayPrivate, req, accessToken)
+				if got := req.Headers.Get("Authorization"); got != "Bearer "+accessToken {
+					t.Errorf("authorization = %q", got)
+				}
+				return pluginapi.HTTPResponse{StatusCode: 200}, nil
+			}}
+			for i := 0; i < 3; i++ {
+				if _, err := client.Do(context.Background(), host, "POST", "/v1/messages", nil, nil, []byte("{}")); err != nil {
+					t.Fatalf("request %d failed instead of falling back: %v", i, err)
+				}
+			}
+			if relayed != 3 {
+				t.Fatalf("relayed = %d", relayed)
+			}
+			if mints != 1 {
+				t.Fatalf("mint attempts = %d, want the relay asked once and then left alone", mints)
+			}
+			// The window has to expire before the plugin asks again.
+			now = now.Add(tt.quiet - time.Second)
+			if _, err := client.Do(context.Background(), host, "POST", "/v1/messages", nil, nil, []byte("{}")); err != nil || mints != 1 {
+				t.Fatalf("mints = %d err = %v", mints, err)
+			}
+			now = now.Add(2 * time.Second)
+			if _, err := client.Do(context.Background(), host, "POST", "/v1/messages", nil, nil, []byte("{}")); err != nil || mints != 2 {
+				t.Fatalf("mints = %d err = %v", mints, err)
+			}
+		})
+	}
+}
+
 func TestParseModelCatalogOffersEachServableModelOnce(t *testing.T) {
 	models, errParse := ParseModelCatalog([]byte(`{"data":[
 		{"id":"claude-haiku-4-5"},

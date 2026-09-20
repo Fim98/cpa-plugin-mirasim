@@ -36,13 +36,20 @@ const (
 	ticketBackoffMax   = 30 * time.Second
 	ticketRetryMax     = 15 * time.Minute
 	ticketRefusalFloor = 30 * time.Second
-	profileTimeout     = 5 * time.Second
-	maxErrorBody       = 1 << 20
-	maxErrorMessage    = 4 << 10
-	quotaHeaderSource  = "GET /v1/models response headers"
-	quotaLimitsSource  = "GET /v1/limits JSON"
-	quotaProbeHeader   = "x-mirasim-probe"
-	claudeOAuthBeta    = "oauth-2025-04-20"
+	// A relay that answers 404 or 501 to the mint does not offer device signing
+	// here. Asking again soon cannot change that, so stop asking for the window
+	// the official client waits. The 404 window is the shorter of the two: a
+	// route that is merely absent may be a deployment still rolling out, while
+	// 501 is the relay stating outright that it does not implement one.
+	ticketRouteAbsentQuiet   = time.Minute
+	ticketUnimplementedQuiet = 15 * time.Minute
+	profileTimeout           = 5 * time.Second
+	maxErrorBody             = 1 << 20
+	maxErrorMessage          = 4 << 10
+	quotaHeaderSource        = "GET /v1/models response headers"
+	quotaLimitsSource        = "GET /v1/limits JSON"
+	quotaProbeHeader         = "x-mirasim-probe"
+	claudeOAuthBeta          = "oauth-2025-04-20"
 )
 
 var quotaHeaderNames = []string{
@@ -119,10 +126,13 @@ type Client struct {
 	ticketFailures     int
 	ticketLastError    error
 	ticketRefusedUntil time.Time
-	refreshRequired    bool
-	quota              QuotaSnapshot
-	authProxyURL       string
-	now                func() time.Time
+	// ticketUnmintableUntil holds off the mint while the relay reports that it
+	// has no device-session route at all.
+	ticketUnmintableUntil time.Time
+	refreshRequired       bool
+	quota                 QuotaSnapshot
+	authProxyURL          string
+	now                   func() time.Time
 }
 
 func NewClient(storage credentials.Storage) *Client {
@@ -466,6 +476,9 @@ func (c *Client) ticketLocked(ctx context.Context, client pluginapi.HostHTTPClie
 	if c.ticket != "" && now.Before(c.ticketExpiresAt.Add(-ticketRefreshLead)) {
 		return c.ticket, nil
 	}
+	if now.Before(c.ticketUnmintableUntil) {
+		return c.accessCredentialLocked()
+	}
 	if now.Before(c.ticketRetryAt) {
 		if c.ticket != "" && now.Before(c.ticketExpiresAt) {
 			return c.ticket, nil
@@ -500,6 +513,11 @@ func (c *Client) ticketLocked(ctx context.Context, client pluginapi.HostHTTPClie
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errStatus := NewStatusError(resp.StatusCode, resp.Body, resp.Headers)
+		if quiet := ticketUnmintableWindow(resp.StatusCode); quiet > 0 {
+			c.resetTicketBackoffLocked()
+			c.ticketUnmintableUntil = now.Add(quiet)
+			return c.accessCredentialLocked()
+		}
 		if resp.StatusCode == http.StatusUnauthorized {
 			c.refreshRequired = true
 		}
@@ -526,6 +544,18 @@ func (c *Client) ticketLocked(ctx context.Context, client pluginapi.HostHTTPClie
 	c.ticketExpiresAt = resolveTicketExpiry(now, payload.ExpiresIn, payload.ExpiresAt)
 	c.resetTicketBackoffLocked()
 	return c.ticket, nil
+}
+
+// accessCredentialLocked authorizes and signs with the access token itself.
+// The official client falls back to it for as long as the relay reports no
+// device-session route, so a relay that mints no ticket still serves requests
+// rather than failing every one of them. The request is signed either way; only
+// the credential inside the signature changes.
+func (c *Client) accessCredentialLocked() (string, error) {
+	if errToken := c.ensureAccessTokenLocked(); errToken != nil {
+		return "", errToken
+	}
+	return c.accessToken, nil
 }
 
 func (c *Client) ensureAccessTokenLocked() error {

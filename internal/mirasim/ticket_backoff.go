@@ -90,8 +90,21 @@ func (c *Client) invalidateTicketLocked() {
 
 func (c *Client) resetTicketBackoffLocked() {
 	c.ticketRetryAt = time.Time{}
+	c.ticketUnmintableUntil = time.Time{}
 	c.ticketFailures = 0
 	c.ticketLastError = nil
+}
+
+// ticketUnmintableWindow reports how long to stop minting after the relay says
+// it has no device-session route, and zero for a failure that retrying can fix.
+func ticketUnmintableWindow(status int) time.Duration {
+	switch status {
+	case http.StatusNotFound:
+		return ticketRouteAbsentQuiet
+	case http.StatusNotImplemented:
+		return ticketUnimplementedQuiet
+	}
+	return 0
 }
 
 func (c *Client) noteTicketFailureLocked(cause error, headers http.Header, retryable bool) {

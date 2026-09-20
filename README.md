@@ -80,6 +80,8 @@ Set `collect: false` to send the official `x-mirasim-collect: off` signal inside
 
 Only inference routes carry that metadata. `/v1/models`, `/v1/limits` and `/v1/model-roster` describe the account rather than a conversation, so they are signed with empty metadata and sealed nothing, exactly as the official client sends them: no session, agent, sub-account, locale or collection signal is attached. Each inference call also carries its own `x-mirasim-call` identifier.
 
+Relay calls are bearer-authorized with a device ticket minted at `/v1/device/session`. A relay that answers 404 or 501 there offers no device signing, so the plugin signs and authorizes with the access token itself and stops asking for one minute (404) or fifteen (501), matching the official client. Requests keep working throughout; only the credential inside the signature changes. Other mint failures still back off and surface, so CPA can rotate the credential.
+
 `x-mirasim-account` carries a sub-account only when the access token names one. An account without that claim sends no account header at all, matching the official client; the local identity used for auth file naming and session scoping is never substituted for it. Host `execution_session_id` values produce stable, account-scoped relay session IDs; a host integration may supply `mirasim_turn_id` in executor metadata for task association. Missing task IDs are omitted. Browser-supplied `x-mirasim-*` headers cannot override these values. Repository paths and Git metadata are not collected by the plugin.
 
 ## Model metadata
