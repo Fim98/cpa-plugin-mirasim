@@ -5,6 +5,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -105,5 +106,51 @@ func TestRelayOmitsTheAccountHeaderWhenTheTokenNamesNoSubAccount(t *testing.T) {
 	}}
 	if _, err := client.Do(context.Background(), host, "POST", "/v1/messages", nil, nil, []byte("{}")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWireProfileIsAbsentUntilConfigured(t *testing.T) {
+	if profile := (RelayOptions{}).wireProfile(); profile != nil {
+		t.Fatalf("profile = %#v", profile)
+	}
+}
+
+func TestLowercaseRelayHeadersImpliesHTTP1(t *testing.T) {
+	profile := RelayOptions{LowercaseRelayHeaders: true}.wireProfile()
+	if profile == nil || !profile.HTTP1Only {
+		t.Fatalf("profile = %#v", profile)
+	}
+	if len(profile.HeaderProfile) != len(relayHeaderProfile) {
+		t.Fatalf("header profile = %#v", profile.HeaderProfile)
+	}
+	for _, name := range profile.HeaderProfile {
+		if name != strings.ToLower(name) {
+			t.Fatalf("header profile entry is not lower case: %q", name)
+		}
+	}
+}
+
+func TestHTTP1OnlyDoesNotReorderHeaders(t *testing.T) {
+	profile := RelayOptions{HTTP1Only: true}.wireProfile()
+	if profile == nil || !profile.HTTP1Only || len(profile.HeaderProfile) != 0 {
+		t.Fatalf("profile = %#v", profile)
+	}
+}
+
+// Every signed header must be spelled in the profile, or the host would leave
+// it in Go's canonical form while its neighbours moved to lower case.
+func TestHeaderProfileCoversTheSignedHeaders(t *testing.T) {
+	present := make(map[string]bool, len(relayHeaderProfile))
+	for _, name := range relayHeaderProfile {
+		present[name] = true
+	}
+	for _, name := range []string{
+		headerMirasimDevice, headerMirasimTimestamp, headerMirasimNonce, headerMirasimSignature,
+		headerMirasimClient, headerMirasimEncryptedMetadata, headerMirasimSession,
+		headerMirasimAgent, headerMirasimCall, quotaProbeHeader,
+	} {
+		if !present[name] {
+			t.Fatalf("header %q is missing from the wire profile", name)
+		}
 	}
 }

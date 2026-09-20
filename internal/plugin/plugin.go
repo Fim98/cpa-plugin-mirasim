@@ -26,7 +26,12 @@ type MirasimPlugin struct {
 
 func Build(configYAML []byte) pluginapi.Plugin {
 	settings := pluginconfig.Parse(configYAML)
-	pool := mirasim.NewPool(mirasim.RelayOptions{Collect: settings.Collect, Locale: settings.Locale})
+	pool := mirasim.NewPool(mirasim.RelayOptions{
+		Collect:               settings.Collect,
+		Locale:                settings.Locale,
+		HTTP1Only:             settings.HTTP1Only != nil && *settings.HTTP1Only,
+		LowercaseRelayHeaders: settings.LowercaseRelayHeaders != nil && *settings.LowercaseRelayHeaders,
+	})
 	authProvider := auth.New(settings, pool)
 	p := &MirasimPlugin{
 		auth:       authProvider,
@@ -49,6 +54,8 @@ func Build(configYAML []byte) pluginapi.Plugin {
 				{Name: "admin-url", Type: pluginapi.ConfigFieldTypeString, Description: "Mirasim authentication service base URL."},
 				{Name: "client-version", Type: pluginapi.ConfigFieldTypeString, Description: "Value sent in x-mirasim-client."},
 				{Name: "oauth-public-base-url", Type: pluginapi.ConfigFieldTypeString, Description: "Externally reachable CPA base URL for Mirasim OAuth callbacks."},
+				{Name: "http1-only", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Skip HTTP/2 negotiation on Mirasim relay calls."},
+				{Name: "lowercase-relay-headers", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Send Mirasim relay header names in lower case. Implies HTTP/1.1."},
 			},
 		},
 		Capabilities: pluginapi.Capabilities{

@@ -322,10 +322,11 @@ func (c *Client) do(ctx context.Context, client pluginapi.HostHTTPClient, method
 			outboundHeaders[http.CanonicalHeaderKey(key)] = append([]string(nil), values...)
 		}
 		resp, errDo := client.Do(ctx, pluginapi.HTTPRequest{
-			Method:  method,
-			URL:     endpoint,
-			Headers: outboundHeaders,
-			Body:    append([]byte(nil), body...),
+			Method:      method,
+			URL:         endpoint,
+			Headers:     outboundHeaders,
+			Body:        append([]byte(nil), body...),
+			WireProfile: c.options.wireProfile(),
 		})
 		if errDo != nil {
 			return pluginapi.HTTPResponse{}, errDo
@@ -356,10 +357,11 @@ func (c *Client) DoStream(ctx context.Context, client pluginapi.HostHTTPClient, 
 		}
 		outboundHeaders := prepareHeaders(headers, authHeaders, true)
 		resp, errDo := client.DoStream(ctx, pluginapi.HTTPRequest{
-			Method:  method,
-			URL:     endpoint,
-			Headers: outboundHeaders,
-			Body:    append([]byte(nil), body...),
+			Method:      method,
+			URL:         endpoint,
+			Headers:     outboundHeaders,
+			Body:        append([]byte(nil), body...),
+			WireProfile: c.options.wireProfile(),
 		})
 		if errDo != nil {
 			return pluginapi.HTTPStreamResponse{}, errDo
@@ -514,7 +516,13 @@ func (c *Client) ticketLocked(ctx context.Context, client pluginapi.HostHTTPClie
 	if errURL != nil {
 		return "", errURL
 	}
-	resp, errDo := client.Do(ctx, pluginapi.HTTPRequest{Method: http.MethodPost, URL: endpoint, Headers: signed, Body: body})
+	resp, errDo := client.Do(ctx, pluginapi.HTTPRequest{
+		Method:      http.MethodPost,
+		URL:         endpoint,
+		Headers:     signed,
+		Body:        body,
+		WireProfile: c.options.wireProfile(),
+	})
 	if errDo != nil {
 		errTicket := fmt.Errorf("mint Mirasim device ticket: %w", errDo)
 		c.noteTicketFailureLocked(errTicket, nil, true)

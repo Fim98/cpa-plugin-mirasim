@@ -43,6 +43,8 @@ plugins:
 
 Optional settings are `relay-url` (default `https://relay.mirasim.ai`), `admin-url` (default `https://auth.mirasim.ai`), and `client-version` (default `0.0.310`). Explicit configuration overrides the corresponding `MIRASIM_RELAY_URL`, `MIRASIM_ADMIN_URL`, `MIRASIM_CLIENT_VERSION`, and `MIRASIM_OAUTH_PUBLIC_BASE_URL` environment variables.
 
+Two further settings shape how relay calls appear on the wire, and both are off unless set. `http1-only` skips HTTP/2 negotiation. `lowercase-relay-headers` puts header names on the wire in lower case instead of Go's canonical `X-Mirasim-Device` form; CPA implements this by rewriting the request line, so it also forces HTTP/1.1. Their environment defaults are `MIRASIM_HTTP1_ONLY` and `MIRASIM_LOWERCASE_RELAY_HEADERS`. Neither changes what is signed, and neither is enabled by default: which protocol the relay prefers, and whether header spelling matters to it, are not things this plugin can establish on your behalf. Turn them on only if you are matching an observed client and can retest inference afterwards.
+
 The running plugin configuration determines `client-version`, including when loading older OAuth files. Existing tokens and device keys remain valid inputs; CPA persists the updated version on its normal auth save/refresh path. Use `client-version` explicitly if an upstream needs a different version.
 
 ## OAuth login

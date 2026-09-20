@@ -3,11 +3,62 @@ package mirasim
 import (
 	"context"
 	"strings"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 type RelayOptions struct {
 	Collect *bool
 	Locale  string
+	// HTTP1Only and LowercaseRelayHeaders shape the outbound wire profile the
+	// host applies to relay calls. Both are off unless configured, because the
+	// resulting protocol negotiation cannot be verified from here.
+	HTTP1Only             bool
+	LowercaseRelayHeaders bool
+}
+
+// relayHeaderProfile lists the header names a relay call can carry, in the
+// order and lower-case spelling to put on the wire. The host keeps any header
+// missing from this list and appends it unchanged, so an omission reorders
+// nothing away. This controls spelling and order only; it does not claim to
+// reproduce the official client byte for byte.
+var relayHeaderProfile = []string{
+	"host",
+	"connection",
+	"content-length",
+	"accept",
+	"content-type",
+	"authorization",
+	"anthropic-version",
+	"anthropic-beta",
+	headerMirasimClient,
+	headerMirasimDevice,
+	headerMirasimTimestamp,
+	headerMirasimNonce,
+	headerMirasimSignature,
+	headerMirasimEncryptedMetadata,
+	headerMirasimSession,
+	headerMirasimAgent,
+	headerMirasimCall,
+	quotaProbeHeader,
+	"accept-encoding",
+	"user-agent",
+}
+
+// wireProfile returns the outbound profile for relay calls, or nil to leave the
+// host transport at its own defaults.
+func (o RelayOptions) wireProfile() *pluginapi.HTTPWireProfile {
+	if !o.HTTP1Only && !o.LowercaseRelayHeaders {
+		return nil
+	}
+	profile := &pluginapi.HTTPWireProfile{HTTP1Only: o.HTTP1Only}
+	if o.LowercaseRelayHeaders {
+		// The host rewrites the request line to apply this, which it can only do
+		// over HTTP/1.1; say so rather than letting it be inferred.
+		profile.HTTP1Only = true
+		profile.HeaderProfile = append([]string(nil), relayHeaderProfile...)
+	}
+	return profile
 }
 
 type requestIdentityKey struct{}

@@ -24,6 +24,13 @@ type Settings struct {
 	// OAuthPublicBaseURL is the externally reachable CPA origin used for the
 	// browser callback. It is intentionally not persisted in auth records.
 	OAuthPublicBaseURL string `yaml:"oauth-public-base-url"`
+	// HTTP1Only asks the host transport to skip HTTP/2 negotiation for relay
+	// calls. Unset leaves the host's own default alone.
+	HTTP1Only *bool `yaml:"http1-only"`
+	// LowercaseRelayHeaders asks the host to put relay header names on the wire
+	// in lower case rather than Go's canonical form. The host implements this by
+	// rewriting the request line, which requires HTTP/1.1.
+	LowercaseRelayHeaders *bool `yaml:"lowercase-relay-headers"`
 }
 
 type rootConfig struct {
@@ -72,18 +79,28 @@ func merge(settings, configured Settings) Settings {
 	if value := cleanURL(configured.OAuthPublicBaseURL); value != "" {
 		settings.OAuthPublicBaseURL = value
 	}
+	if configured.HTTP1Only != nil {
+		value := *configured.HTTP1Only
+		settings.HTTP1Only = &value
+	}
+	if configured.LowercaseRelayHeaders != nil {
+		value := *configured.LowercaseRelayHeaders
+		settings.LowercaseRelayHeaders = &value
+	}
 	return settings
 }
 
 // Defaults resolves environment overrides and safe provider defaults.
 func Defaults() Settings {
 	return Settings{
-		Collect:            optionalBool(os.Getenv("MIRASIM_COLLECT")),
-		Locale:             strings.TrimSpace(os.Getenv("MIRASIM_LOCALE")),
-		RelayURL:           firstNonEmpty(cleanURL(os.Getenv("MIRASIM_RELAY_URL")), DefaultRelayURL),
-		AdminURL:           firstNonEmpty(cleanURL(os.Getenv("MIRASIM_ADMIN_URL")), DefaultAdminURL),
-		ClientVersion:      firstNonEmpty(strings.TrimSpace(os.Getenv("MIRASIM_CLIENT_VERSION")), DefaultClientVersion),
-		OAuthPublicBaseURL: cleanURL(os.Getenv("MIRASIM_OAUTH_PUBLIC_BASE_URL")),
+		Collect:               optionalBool(os.Getenv("MIRASIM_COLLECT")),
+		Locale:                strings.TrimSpace(os.Getenv("MIRASIM_LOCALE")),
+		RelayURL:              firstNonEmpty(cleanURL(os.Getenv("MIRASIM_RELAY_URL")), DefaultRelayURL),
+		AdminURL:              firstNonEmpty(cleanURL(os.Getenv("MIRASIM_ADMIN_URL")), DefaultAdminURL),
+		ClientVersion:         firstNonEmpty(strings.TrimSpace(os.Getenv("MIRASIM_CLIENT_VERSION")), DefaultClientVersion),
+		OAuthPublicBaseURL:    cleanURL(os.Getenv("MIRASIM_OAUTH_PUBLIC_BASE_URL")),
+		HTTP1Only:             optionalBool(os.Getenv("MIRASIM_HTTP1_ONLY")),
+		LowercaseRelayHeaders: optionalBool(os.Getenv("MIRASIM_LOWERCASE_RELAY_HEADERS")),
 	}
 }
 
