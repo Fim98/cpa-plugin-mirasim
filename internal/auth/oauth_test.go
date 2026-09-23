@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -260,6 +261,51 @@ func TestPinnedCallbackPortKeepsExactlyOneListener(t *testing.T) {
 	}
 	if polled, _ := provider.PollLogin(context.Background(), pluginapi.AuthLoginPollRequest{State: first.State}); polled.Status != pluginapi.AuthLoginStatusError {
 		t.Fatalf("replaced login poll = %#v", polled)
+	}
+}
+
+// The cap exists because every pending login holds a loopback port open, so it
+// has to hold when the calls arrive together and not just one at a time.
+func TestConcurrentStartLoginNeverExceedsTheSessionCap(t *testing.T) {
+	provider, _ := newLoopbackLoginProvider(t, pluginconfig.Defaults())
+	const contenders = 4 * maxOAuthSessions
+	start := make(chan struct{})
+	outcomes := make(chan error, contenders)
+	var running sync.WaitGroup
+	for contender := 0; contender < contenders; contender++ {
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			<-start
+			_, errStart := provider.StartLogin(context.Background(), pluginapi.AuthLoginStartRequest{})
+			outcomes <- errStart
+		}()
+	}
+	close(start)
+	running.Wait()
+	close(outcomes)
+
+	accepted := 0
+	for errStart := range outcomes {
+		if errStart == nil {
+			accepted++
+			continue
+		}
+		if !strings.Contains(errStart.Error(), "too many pending") {
+			t.Fatalf("refused login error = %v, want the session cap", errStart)
+		}
+	}
+	if accepted > maxOAuthSessions {
+		t.Fatalf("concurrent StartLogin accepted %d logins, cap is %d", accepted, maxOAuthSessions)
+	}
+	if accepted == 0 {
+		t.Fatal("concurrent StartLogin accepted no login at all")
+	}
+	provider.oauth.mu.Lock()
+	sessions := len(provider.oauth.sessions)
+	provider.oauth.mu.Unlock()
+	if sessions != accepted {
+		t.Fatalf("pending sessions = %d, want the %d accepted logins", sessions, accepted)
 	}
 }
 

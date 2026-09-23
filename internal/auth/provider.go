@@ -16,6 +16,9 @@ type Provider struct {
 	settings pluginconfig.Settings
 	pool     *mirasim.Pool
 	oauth    *oauthCoordinator
+	// prompter overrides the process-wide stdin reader that serves interactive
+	// login prompts. Only tests set it.
+	prompter *stdinPrompter
 }
 
 const refreshTimeout = 60 * time.Second

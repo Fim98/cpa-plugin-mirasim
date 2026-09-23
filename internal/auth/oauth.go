@@ -89,6 +89,11 @@ func (p *Provider) StartLogin(ctx context.Context, req pluginapi.AuthLoginStartR
 	port := loopbackCallbackPort(p.settings.OAuthCallbackPort)
 
 	now := p.oauth.now()
+	expiresAt := now.Add(oauthLoginTTL)
+	// The session slot is taken under the same lock that checks the cap. Binding
+	// the listener afterwards takes long enough that concurrent StartLogin calls
+	// would otherwise all pass the check before any of them inserted, and the cap
+	// exists because every pending login holds a loopback port open.
 	p.oauth.mu.Lock()
 	stale := p.oauth.purgeLocked(now)
 	if port != 0 {
@@ -100,26 +105,35 @@ func (p *Provider) StartLogin(ctx context.Context, req pluginapi.AuthLoginStartR
 		closeLoopbackCaptures(stale)
 		return pluginapi.AuthLoginStartResponse{}, fmt.Errorf("too many pending Mirasim OAuth sessions")
 	}
+	p.oauth.sessions[state] = &oauthSession{state: state, provider: loginProvider, expiresAt: expiresAt}
 	p.oauth.mu.Unlock()
 	closeLoopbackCaptures(stale)
 
 	capture, errCapture := startLoopbackCapture(port, state)
 	if errCapture != nil {
+		p.oauth.expire(state)
 		return pluginapi.AuthLoginStartResponse{}, errCapture
 	}
 	authURL, errURL := buildMirasimOAuthURL(p.settings.AdminURL, loginProvider, capture.CallbackURL(), state)
 	if errURL != nil {
 		capture.Close()
+		p.oauth.expire(state)
 		return pluginapi.AuthLoginStartResponse{}, errURL
 	}
 
-	expiresAt := now.Add(oauthLoginTTL)
 	p.oauth.mu.Lock()
-	session := &oauthSession{state: state, provider: loginProvider, capture: capture, expiresAt: expiresAt}
+	session := p.oauth.sessions[state]
+	if session == nil {
+		// Another login claimed the pinned port, or the slot expired, while this
+		// listener was coming up.
+		p.oauth.mu.Unlock()
+		capture.Close()
+		return pluginapi.AuthLoginStartResponse{}, fmt.Errorf("Mirasim OAuth session was replaced before it could start")
+	}
+	session.capture = capture
 	// An abandoned login must release its port on its own rather than squatting
 	// until some later call happens to purge it.
 	session.teardown = time.AfterFunc(oauthLoginTTL, func() { p.oauth.expire(state) })
-	p.oauth.sessions[state] = session
 	p.oauth.mu.Unlock()
 
 	go p.awaitOAuthCallback(state, capture)
