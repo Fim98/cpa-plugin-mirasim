@@ -56,6 +56,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	pluginconfig "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/config"
 	mirasimplugin "github.com/router-for-me/CLIProxyAPIPlugins/mirasim/internal/plugin"
 )
 
@@ -177,6 +178,15 @@ type abiHostStreamEmitRequest struct {
 type abiHostStreamCloseRequest struct {
 	StreamID string `json:"stream_id"`
 	Error    string `json:"error,omitempty"`
+}
+
+// abiHostLogRequest mirrors the host's rpcHostLogRequest. host_callback_id is
+// left off: registration has no callback context, and the host resolves an
+// empty id to its own fallback context.
+type abiHostLogRequest struct {
+	Level   string         `json:"level"`
+	Message string         `json:"message"`
+	Fields  map[string]any `json:"fields,omitempty"`
 }
 
 type abiEmptyResponse struct{}
@@ -401,6 +411,7 @@ func handleRegister(request []byte) ([]byte, error) {
 	if errDecode := json.Unmarshal(request, &req); errDecode != nil {
 		return nil, errDecode
 	}
+	warnDeprecatedConfigKeys(req.ConfigYAML)
 	built := mirasimplugin.Build(req.ConfigYAML)
 	built.Metadata.Version = pluginVersion
 	p, okPlugin := built.Capabilities.AuthProvider.(*mirasimplugin.MirasimPlugin)
@@ -425,6 +436,33 @@ func handleRegister(request []byte) ([]byte, error) {
 			ManagementAPI:         built.Capabilities.ManagementAPI != nil,
 			QuotaProvider:         built.Capabilities.QuotaProvider != nil,
 		},
+	})
+}
+
+// warnDeprecatedConfigKeys tells the operator, through the host's own log, that
+// their configuration still carries a key nothing reads. It runs on register
+// and on reconfigure, which is deliberate: the host logs a hot reload too, and
+// the warning belongs next to it. Build cannot report failure and a stale key
+// must not stop the plugin loading, so this is advisory only — the key names
+// and their replacements are the entire payload, and no configuration value
+// ever reaches the log.
+func warnDeprecatedConfigKeys(configYAML []byte) {
+	for _, key := range pluginconfig.DeprecatedKeys(configYAML) {
+		replacement := pluginconfig.ReplacementFor(key)
+		emitHostLog(
+			"warn",
+			fmt.Sprintf("mirasim: configuration key %q has been removed and is ignored; use %q instead", key, replacement),
+			map[string]any{"deprecated_key": key, "replacement": replacement},
+		)
+	}
+}
+
+// emitHostLog writes one line to the host's logger. It is a variable so a test
+// can observe the warning without a live host pointer. A failure is ignored on
+// purpose: a host that cannot log for us must still be able to register us.
+var emitHostLog = func(level, message string, fields map[string]any) {
+	_, _ = callHost[abiEmptyResponse](pluginabi.MethodHostLog, abiHostLogRequest{
+		Level: level, Message: message, Fields: fields,
 	})
 }
 

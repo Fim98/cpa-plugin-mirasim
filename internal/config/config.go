@@ -50,6 +50,63 @@ type rootConfig struct {
 	} `yaml:"plugins"`
 }
 
+// deprecatedKeys names configuration keys that have been removed, each paired
+// with the setting that supersedes it. Nothing reads these keys: they carry no
+// yaml tag on Settings and no environment binding, and they are listed here
+// only so that a configuration still carrying one can be reported to the
+// operator. CPA does not check plugin configuration keys against the fields a
+// plugin declares and YAML ignores a key nothing reads, so without this table a
+// stale configuration loads silently.
+var deprecatedKeys = []struct{ key, replacement string }{
+	{"oauth-public-base-url", "oauth-callback-port"},
+}
+
+// DeprecatedKeys reports which removed keys a configuration still carries, in a
+// stable order. It is pure: it reads no value, resolves no environment
+// override, and leaves Parse alone — a configuration this cannot parse simply
+// reports no deprecated keys, exactly as Parse falls back to defaults.
+func DeprecatedKeys(raw []byte) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var root map[string]any
+	if errUnmarshal := yaml.Unmarshal(raw, &root); errUnmarshal != nil {
+		return nil
+	}
+	section := pluginSection(root)
+	var found []string
+	for _, deprecated := range deprecatedKeys {
+		if _, ok := section[deprecated.key]; ok {
+			found = append(found, deprecated.key)
+		}
+	}
+	return found
+}
+
+// ReplacementFor names the setting that supersedes a removed key. Every key
+// DeprecatedKeys returns has one, because both come from the same table.
+func ReplacementFor(key string) string {
+	for _, deprecated := range deprecatedKeys {
+		if deprecated.key == key {
+			return deprecated.replacement
+		}
+	}
+	return ""
+}
+
+// pluginSection picks the mapping Parse would have read settings from: the
+// runtime subconfiguration under plugins.configs.mirasim when the host supplies
+// one, and otherwise the document root used by direct embedders.
+func pluginSection(root map[string]any) map[string]any {
+	plugins, _ := root["plugins"].(map[string]any)
+	configs, _ := plugins["configs"].(map[string]any)
+	if section, ok := configs["mirasim"]; ok {
+		mirasim, _ := section.(map[string]any)
+		return mirasim
+	}
+	return root
+}
+
 // Parse accepts both CLIProxyAPI's runtime plugin subconfiguration and the
 // legacy full-config shape used by early tests and direct embedders.
 func Parse(raw []byte) Settings {

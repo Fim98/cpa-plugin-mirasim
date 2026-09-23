@@ -111,6 +111,60 @@ func TestParseInvalidConfigFallsBackToDefaults(t *testing.T) {
 	}
 }
 
+// A v1.1.x configuration must be recognised in both shapes Parse accepts, and
+// naming the dead key must not cost the operator any other setting in the file.
+func TestDeprecatedKeyIsDetectedWithoutDisturbingTheRestOfTheConfig(t *testing.T) {
+	t.Setenv("MIRASIM_OAUTH_CALLBACK_PORT", "")
+	hosted := []byte(`
+plugins:
+  configs:
+    mirasim:
+      oauth-public-base-url: https://cpa.example.com
+      relay-url: https://relay.example/
+      oauth-callback-port: 41111
+`)
+	embedded := []byte("oauth-public-base-url: https://cpa.example.com\nrelay-url: https://relay.example/\n")
+	for name, raw := range map[string][]byte{"hosted": hosted, "embedded": embedded} {
+		keys := DeprecatedKeys(raw)
+		if len(keys) != 1 || keys[0] != "oauth-public-base-url" {
+			t.Fatalf("%s: DeprecatedKeys = %#v", name, keys)
+		}
+		if settings := Parse(raw); settings.RelayURL != "https://relay.example" {
+			t.Fatalf("%s: the dead key cost us another setting: %#v", name, settings)
+		}
+	}
+	if port := Parse(hosted).OAuthCallbackPort; port != "41111" {
+		t.Fatalf("OAuthCallbackPort = %q", port)
+	}
+	if replacement := ReplacementFor("oauth-public-base-url"); replacement != "oauth-callback-port" {
+		t.Fatalf("ReplacementFor = %q", replacement)
+	}
+}
+
+// Silence is the common case: every clean configuration, and every shape the
+// detector cannot read, must produce no warning at all.
+func TestCleanConfigReportsNoDeprecatedKeys(t *testing.T) {
+	for _, raw := range [][]byte{
+		nil,
+		[]byte(""),
+		[]byte("relay-url: https://relay.example/\noauth-callback-port: 41111\n"),
+		[]byte("plugins:\n  configs:\n    mirasim:\n      relay-url: https://relay.example/\n"),
+		// The key under another plugin's section is not ours to complain about.
+		[]byte("plugins:\n  configs:\n    other:\n      oauth-public-base-url: https://cpa.example.com\n"),
+		// Parse falls back to defaults on a yaml error; the detector stays quiet.
+		[]byte("plugins: ["),
+		[]byte("- a list, not a mapping\n"),
+		[]byte("plugins:\n  configs:\n    mirasim:\n"),
+	} {
+		if keys := DeprecatedKeys(raw); len(keys) != 0 {
+			t.Fatalf("DeprecatedKeys(%q) = %#v, want none", raw, keys)
+		}
+	}
+	if replacement := ReplacementFor("relay-url"); replacement != "" {
+		t.Fatalf("ReplacementFor(live key) = %q", replacement)
+	}
+}
+
 func TestDefaultsUseCurrentMirasimEndpointsAndProtocolVersion(t *testing.T) {
 	t.Setenv("MIRASIM_RELAY_URL", "")
 	t.Setenv("MIRASIM_ADMIN_URL", "")

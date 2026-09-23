@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -132,6 +133,119 @@ func TestABIUnknownMethodReturnsErrorEnvelope(t *testing.T) {
 		}
 		if envelope.OK || envelope.Error == nil || envelope.Error.Code != "unknown_method" {
 			t.Fatalf("%s envelope = %s", method, raw)
+		}
+	}
+}
+
+type capturedHostLog struct {
+	level   string
+	message string
+	fields  map[string]any
+}
+
+// captureHostLog swaps the host log sink for one the test can read, and puts
+// the real one back afterwards.
+func captureHostLog(t *testing.T) *[]capturedHostLog {
+	t.Helper()
+	restore := emitHostLog
+	t.Cleanup(func() { emitHostLog = restore })
+	var lines []capturedHostLog
+	emitHostLog = func(level, message string, fields map[string]any) {
+		lines = append(lines, capturedHostLog{level: level, message: message, fields: fields})
+	}
+	return &lines
+}
+
+func lifecycleRequest(t *testing.T, configYAML string) []byte {
+	t.Helper()
+	raw, errMarshal := json.Marshal(abiLifecycleRequest{ConfigYAML: []byte(configYAML)})
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	return raw
+}
+
+// A v1.1.x configuration still names a key nothing reads, and YAML ignores it
+// silently, so browser login fails by never completing. The host log is the
+// only runtime signal the operator gets, and it has to fire on a hot reload as
+// well as a cold start.
+func TestABIRegisterWarnsOnceAboutADeprecatedConfigKey(t *testing.T) {
+	defer MirasimPluginShutdown()
+	lines := captureHostLog(t)
+
+	const secret = "https://cpa.example.com/private-callback-origin"
+	request := lifecycleRequest(t, "plugins:\n  configs:\n    mirasim:\n"+
+		"      oauth-public-base-url: "+secret+"\n      relay-url: https://relay.example/\n")
+
+	for _, method := range []string{pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure} {
+		*lines = nil
+		raw, errCall := handleABIMethod(context.Background(), method, request)
+		if errCall != nil {
+			t.Fatalf("%s error = %v", method, errCall)
+		}
+		// The warning is advisory: a stale key must never stop the plugin loading,
+		// or a dead callback origin would take relay, executor, models and quota
+		// down with it.
+		var envelope pluginabi.Envelope
+		if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil || !envelope.OK {
+			t.Fatalf("%s envelope = %s, error = %v", method, raw, errDecode)
+		}
+		if len(*lines) != 1 {
+			t.Fatalf("%s logged %d lines, want exactly 1: %#v", method, len(*lines), *lines)
+		}
+		line := (*lines)[0]
+		if line.level != "warn" {
+			t.Fatalf("level = %q, want warn", line.level)
+		}
+		// It must say which key is dead and which setting replaces it.
+		if !strings.Contains(line.message, "oauth-public-base-url") {
+			t.Fatalf("message does not name the dead key: %q", line.message)
+		}
+		if !strings.Contains(line.message, "oauth-callback-port") {
+			t.Fatalf("message does not name the replacement: %q", line.message)
+		}
+		if line.fields["deprecated_key"] != "oauth-public-base-url" || line.fields["replacement"] != "oauth-callback-port" {
+			t.Fatalf("fields = %#v", line.fields)
+		}
+		// Key names only. Nothing from the operator's configuration may reach the
+		// host log, so assert against the whole serialised line, not just the text.
+		serialised, errMarshal := json.Marshal(abiHostLogRequest{Level: line.level, Message: line.message, Fields: line.fields})
+		if errMarshal != nil {
+			t.Fatal(errMarshal)
+		}
+		for _, value := range []string{secret, "cpa.example.com", "relay.example"} {
+			if strings.Contains(string(serialised), value) {
+				t.Fatalf("%s leaked a configuration value %q: %s", method, value, serialised)
+			}
+		}
+	}
+}
+
+// Silence is the common case. A configuration that never carried the dead key
+// must produce no warning at all, on either lifecycle method.
+func TestABIRegisterStaysSilentOnACleanConfig(t *testing.T) {
+	defer MirasimPluginShutdown()
+	lines := captureHostLog(t)
+
+	for _, configYAML := range []string{
+		"",
+		"plugins:\n  configs:\n    mirasim:\n      relay-url: https://relay.example/\n      oauth-callback-port: 41111\n",
+		"relay-url: https://relay.example/\n",
+		"plugins: [",
+	} {
+		for _, method := range []string{pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure} {
+			*lines = nil
+			raw, errCall := handleABIMethod(context.Background(), method, lifecycleRequest(t, configYAML))
+			if errCall != nil {
+				t.Fatalf("%q via %s: error = %v", configYAML, method, errCall)
+			}
+			var envelope pluginabi.Envelope
+			if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil || !envelope.OK {
+				t.Fatalf("%q via %s: envelope = %s, error = %v", configYAML, method, raw, errDecode)
+			}
+			if len(*lines) != 0 {
+				t.Fatalf("%q via %s logged %#v, want silence", configYAML, method, *lines)
+			}
 		}
 	}
 }
