@@ -49,6 +49,12 @@ Two further settings shape how relay calls appear on the wire, and both are on b
 
 The running plugin configuration determines `client-version`, including when loading older OAuth files. Existing tokens and device keys remain valid inputs; CPA persists the updated version on its normal auth save/refresh path. Use `client-version` explicitly if an upstream needs a different version.
 
+### Upgrading from v1.1.x
+
+`oauth-public-base-url` is gone, along with the separate OAuth bridge binary that served its callback. Nothing reports this at startup: CPA does not check plugin configuration keys against the fields a plugin declares, and YAML ignores a key nothing reads, so a configuration carrying the old key still loads cleanly and every other setting in it keeps working. Only browser login is affected, and it fails by never completing rather than by returning an error.
+
+If you set `oauth-public-base-url`, the browser and the CPA host are on different machines, so the replacement applies to you: delete the key and follow [Remote CPA hosts](#remote-cpa-hosts) to pin `oauth-callback-port` and forward it over SSH for the duration of a login. A host-local deployment that never set the key needs no new setting — an unset port takes an ephemeral one — and `--mirasim-login`, `--mirasim-login-email` and stored credentials from v1.1.x are unaffected either way.
+
 ## OAuth login
 
 The plugin registers no HTTP routes with CPA. Browser login runs on CPA's own native plugin login abstraction: Management Center calls `GET /v0/management/mirasim-auth-url`, which reaches the plugin's `StartLogin`; the browser follows the returned Mirasim `/auth/oauth/<provider>/login` URL; Management Center then polls `GET /v0/management/auth-status?state=...`, which reaches `PollLogin`, and CPA saves the credential it returns. Both of those routes belong to the host and are management-key protected.
