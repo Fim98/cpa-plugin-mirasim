@@ -12,7 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-func TestABIRegisterAndManagementRoute(t *testing.T) {
+func TestABIRegisterReportsCapabilities(t *testing.T) {
 	defer MirasimPluginShutdown()
 	raw, errRegister := handleABIMethod(context.Background(), pluginabi.MethodPluginRegister, []byte(`{"config_yaml":"cGx1Z2luczoge30K"}`))
 	if errRegister != nil {
@@ -29,8 +29,13 @@ func TestABIRegisterAndManagementRoute(t *testing.T) {
 	if errDecode := json.Unmarshal(envelope.Result, &registration); errDecode != nil {
 		t.Fatalf("decode registration: %v", errDecode)
 	}
-	if registration.SchemaVersion != pluginabi.SchemaVersion || !registration.Capabilities.ManagementAPI || !registration.Capabilities.Executor || !registration.Capabilities.ThinkingApplier || !registration.Capabilities.QuotaProvider {
+	if registration.SchemaVersion != pluginabi.SchemaVersion || !registration.Capabilities.Executor || !registration.Capabilities.ThinkingApplier || !registration.Capabilities.QuotaProvider {
 		t.Fatalf("registration = %#v", registration)
+	}
+	// The plugin registers no HTTP routes at all, so the host must never mount
+	// anything for it under the unauthenticated static-asset prefix.
+	if registration.Capabilities.ManagementAPI {
+		t.Fatalf("management_api = true, want false: %#v", registration.Capabilities)
 	}
 
 	raw, errThinking := handleABIMethod(context.Background(), pluginabi.MethodThinkingApply, []byte(`{"model":{"ID":"gpt-5.6-sol"},"config":{"Mode":"level","Level":"high"},"body":"e30="}`))
@@ -56,26 +61,6 @@ func TestABIRegisterAndManagementRoute(t *testing.T) {
 	// none of them and model.for_auth carries the catalog instead.
 	if modelResponse.Provider != "mirasim" || len(modelResponse.Models) != 0 {
 		t.Fatalf("static models = %#v", modelResponse)
-	}
-
-	raw, errManagement := handleABIMethod(context.Background(), pluginabi.MethodManagementRegister, []byte(`{}`))
-	if errManagement != nil {
-		t.Fatalf("management register error = %v", errManagement)
-	}
-	if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil || !envelope.OK {
-		t.Fatalf("management envelope = %s, error = %v", raw, errDecode)
-	}
-	var management abiManagementRegistration
-	if errDecode := json.Unmarshal(envelope.Result, &management); errDecode != nil {
-		t.Fatalf("decode management registration: %v", errDecode)
-	}
-	// Limits are reported by the quota provider, so no authenticated route of
-	// our own is registered any more.
-	if len(management.Routes) != 0 {
-		t.Fatalf("management routes = %#v", management.Routes)
-	}
-	if len(management.Resources) != 2 || management.Resources[0].Path != "/oauth/start" || management.Resources[1].Path != "/oauth/callback" {
-		t.Fatalf("management resources = %#v", management.Resources)
 	}
 }
 
@@ -133,16 +118,21 @@ func TestABIUnknownMethodReturnsErrorEnvelope(t *testing.T) {
 	if _, errRegister := handleABIMethod(context.Background(), pluginabi.MethodPluginRegister, []byte(`{}`)); errRegister != nil {
 		t.Fatal(errRegister)
 	}
-	raw, errCall := handleABIMethod(context.Background(), "unknown.method", nil)
-	if errCall != nil {
-		t.Fatalf("unknown method returned transport error: %v", errCall)
-	}
-	var envelope pluginabi.Envelope
-	if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil {
-		t.Fatal(errDecode)
-	}
-	if envelope.OK || envelope.Error == nil || envelope.Error.Code != "unknown_method" {
-		t.Fatalf("envelope = %s", raw)
+	// The retired management methods must fall through to the same envelope as
+	// any other unknown method: a host that still calls them gets an answer
+	// rather than a crashed plugin.
+	for _, method := range []string{"unknown.method", pluginabi.MethodManagementRegister, pluginabi.MethodManagementHandle} {
+		raw, errCall := handleABIMethod(context.Background(), method, nil)
+		if errCall != nil {
+			t.Fatalf("%s returned transport error: %v", method, errCall)
+		}
+		var envelope pluginabi.Envelope
+		if errDecode := json.Unmarshal(raw, &envelope); errDecode != nil {
+			t.Fatal(errDecode)
+		}
+		if envelope.OK || envelope.Error == nil || envelope.Error.Code != "unknown_method" {
+			t.Fatalf("%s envelope = %s", method, raw)
+		}
 	}
 }
 

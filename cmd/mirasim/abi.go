@@ -138,24 +138,6 @@ type abiQuotaResetRequest struct {
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
-type abiManagementRegistration struct {
-	Routes    []abiManagementRoute `json:"routes,omitempty"`
-	Resources []abiResourceRoute   `json:"resources,omitempty"`
-}
-
-type abiManagementRoute struct {
-	Method      string `json:"Method"`
-	Path        string `json:"Path"`
-	Menu        string `json:"Menu,omitempty"`
-	Description string `json:"Description,omitempty"`
-}
-
-type abiResourceRoute struct {
-	Path        string `json:"Path"`
-	Menu        string `json:"Menu,omitempty"`
-	Description string `json:"Description,omitempty"`
-}
-
 type abiExecutorStreamResponse struct {
 	Headers http.Header                     `json:"headers,omitempty"`
 	Chunks  []pluginapi.ExecutorStreamChunk `json:"chunks,omitempty"`
@@ -384,23 +366,6 @@ func handleABIMethod(ctx context.Context, method string, request []byte) ([]byte
 		}
 		resp, errCall := p.ExecuteCommandLine(ctx, req)
 		return abiOKEnvelopeWithError(resp, errCall)
-	case pluginabi.MethodManagementRegister:
-		var req pluginapi.ManagementRegistrationRequest
-		if errDecode := json.Unmarshal(request, &req); errDecode != nil {
-			return nil, errDecode
-		}
-		resp, errCall := p.RegisterManagement(ctx, req)
-		if errCall != nil {
-			return abiErrorEnvelopeFromError("plugin_error", errCall), nil
-		}
-		return abiOKEnvelope(toABIManagementRegistration(resp))
-	case pluginabi.MethodManagementHandle:
-		var req pluginapi.ManagementRequest
-		if errDecode := json.Unmarshal(request, &req); errDecode != nil {
-			return nil, errDecode
-		}
-		resp, errCall := p.HandleManagement(ctx, req)
-		return abiOKEnvelopeWithError(resp, errCall)
 	case pluginabi.MethodQuotaDescribe:
 		var req pluginapi.QuotaDescribeRequest
 		if errDecode := json.Unmarshal(request, &req); errDecode != nil {
@@ -470,24 +435,6 @@ func currentPlugin() (*mirasimplugin.MirasimPlugin, error) {
 		return nil, fmt.Errorf("Mirasim plugin is not registered")
 	}
 	return abiState.plugin, nil
-}
-
-func toABIManagementRegistration(resp pluginapi.ManagementRegistrationResponse) abiManagementRegistration {
-	out := abiManagementRegistration{
-		Routes:    make([]abiManagementRoute, 0, len(resp.Routes)),
-		Resources: make([]abiResourceRoute, 0, len(resp.Resources)),
-	}
-	for _, route := range resp.Routes {
-		out.Routes = append(out.Routes, abiManagementRoute{
-			Method: route.Method, Path: route.Path, Menu: route.Menu, Description: route.Description,
-		})
-	}
-	for _, resource := range resp.Resources {
-		out.Resources = append(out.Resources, abiResourceRoute{
-			Path: resource.Path, Menu: resource.Menu, Description: resource.Description,
-		})
-	}
-	return out
 }
 
 type abiHostHTTPClient struct {
