@@ -75,8 +75,13 @@ func (p *Provider) runLocalLogin(ctx context.Context, settings pluginconfig.Sett
 	// The prompt is served by the process's single stdin reader rather than by a
 	// reader of this login's own: os.Stdin cannot be read with cancellation, so a
 	// per-login reader would outlive every login that times out.
-	var promptRequests chan<- chan<- stdinReply
+	var promptRequests chan<- stdinRequest
 	var pasted chan stdinReply
+	// abandoned tells the shared reader this login has stopped waiting, so a line
+	// typed after a cancellation or a timeout is kept for the next prompt instead
+	// of being dropped into a channel nobody is reading.
+	abandoned := make(chan struct{})
+	defer close(abandoned)
 	for {
 		select {
 		case <-ctx.Done():
@@ -86,9 +91,9 @@ func (p *Provider) runLocalLogin(ctx context.Context, settings pluginconfig.Sett
 		case result := <-capture.Results():
 			return p.finishLocalLogin(ctx, settings, proxyURL, state, result)
 		case <-manualTimer.C:
-			pasted = make(chan stdinReply, 1)
+			pasted = make(chan stdinReply)
 			promptRequests = p.promptRequests()
-		case promptRequests <- pasted:
+		case promptRequests <- stdinRequest{reply: pasted, done: abandoned}:
 			// Only ask once the reader is actually on this login's line.
 			promptRequests = nil
 			_, _ = os.Stdout.Write([]byte(manualPastePrompt))
@@ -157,7 +162,10 @@ func parseManualOAuthResult(input, callbackURL string) (localOAuthResult, bool, 
 	if errExpected != nil {
 		return localOAuthResult{}, false, errInvalidCallbackURL
 	}
-	if !strings.EqualFold(parsed.Host, expected.Host) || parsed.Path != expected.Path {
+	// Userinfo is not part of the authority, so a URL carrying it is refused
+	// outright rather than compared: the address bar this paste is copied from
+	// never holds one, and it keeps the comparison below exact.
+	if parsed.User != nil || !strings.EqualFold(parsed.Host, expected.Host) || parsed.Path != expected.Path {
 		return localOAuthResult{}, false, errForeignCallbackURL
 	}
 	values := parsed.Query()
@@ -184,18 +192,28 @@ type stdinReply struct {
 	err  error
 }
 
+// stdinRequest is one prompt's claim on the shared reader. reply is unbuffered
+// and done is closed once the prompt's owner has stopped waiting, which is what
+// lets the reader tell a line that will never be taken from one that has simply
+// not been typed yet.
+type stdinRequest struct {
+	reply chan<- stdinReply
+	done  <-chan struct{}
+}
+
 // stdinPrompter serves every interactive prompt in the process from one
 // goroutine. A blocking read of os.Stdin cannot be cancelled, so a prompt that
 // starts a reader of its own leaves that reader — and its buffered reader —
 // behind whenever the login it belongs to times out or is cancelled, one per
 // login. This reader is created once, parks while no prompt is outstanding, and
-// hands each line to whichever login asked for it.
+// hands each line to the login that asked for it — or, if that login has given
+// up by the time the line arrives, to the next one that prompts.
 type stdinPrompter struct {
-	requests chan chan<- stdinReply
+	requests chan stdinRequest
 }
 
 func newStdinPrompter(source io.Reader) *stdinPrompter {
-	prompter := &stdinPrompter{requests: make(chan chan<- stdinReply)}
+	prompter := &stdinPrompter{requests: make(chan stdinRequest)}
 	go prompter.serve(source)
 	return prompter
 }
@@ -204,11 +222,21 @@ func newStdinPrompter(source io.Reader) *stdinPrompter {
 // byte of the host's stdin.
 func (s *stdinPrompter) serve(source io.Reader) {
 	reader := bufio.NewReader(source)
-	for reply := range s.requests {
-		line, errRead := reader.ReadString('\n')
-		// Every reply channel is buffered, so a caller that stopped waiting drops
-		// its line instead of parking this goroutine on the send.
-		reply <- stdinReply{line: line, err: errRead}
+	var pending *stdinReply
+	for request := range s.requests {
+		if pending == nil {
+			line, errRead := reader.ReadString('\n')
+			pending = &stdinReply{line: line, err: errRead}
+		}
+		select {
+		case request.reply <- *pending:
+			pending = nil
+		case <-request.done:
+			// The login that asked for this line gave up while the read was
+			// blocked on it. Hold the line for the next prompt rather than
+			// discarding it: the operator typed it once, and discarding it here
+			// left the next prompt waiting for a second line it never asked for.
+		}
 	}
 }
 
@@ -224,10 +252,10 @@ func processStdinPrompts() *stdinPrompter {
 	return processStdinReader
 }
 
-// promptRequests is the channel a waiting login hands its reply channel to.
+// promptRequests is the channel a waiting login hands its prompt request to.
 // Tests substitute a prompter over a scripted reader; every real login shares
 // the one reader over os.Stdin.
-func (p *Provider) promptRequests() chan<- chan<- stdinReply {
+func (p *Provider) promptRequests() chan<- stdinRequest {
 	if p != nil && p.prompter != nil {
 		return p.prompter.requests
 	}

@@ -63,6 +63,7 @@ func TestManualPasteMustNameThisLoginsCallbackAddress(t *testing.T) {
 		"foreign loopback":    "http://127.0.0.1:65124/callback/Hn7_2xKq-zR4vAe1" + credentialQuery,
 		"guessed path":        "http://127.0.0.1:65123/callback/guessed" + credentialQuery,
 		"no path":             "http://127.0.0.1:65123/" + credentialQuery,
+		"userinfo":            "http://injected-user@127.0.0.1:65123/callback/Hn7_2xKq-zR4vAe1" + credentialQuery,
 		"bare query":          "access_token=injected-access&refresh_token=injected-refresh",
 		"bare query with '?'": credentialQuery,
 	} {
@@ -195,14 +196,24 @@ func TestRepeatedManualPromptsDoNotAccumulateGoroutines(t *testing.T) {
 	baseline := 0
 	for attempt := 1; attempt <= logins; attempt++ {
 		ctx, cancel := context.WithCancel(context.Background())
-		// The scripted reader cancels the login at the moment it serves the prompt,
-		// so each iteration reaches the prompt and then abandons it, exactly as a
-		// TTL expiry would.
-		source.queue("\n", cancel)
-		_, _, errLogin := provider.runLocalLogin(ctx, provider.settings, "github", "", true)
+		abandoned := make(chan error, 1)
+		go func() {
+			_, _, errLogin := provider.runLocalLogin(ctx, provider.settings, "github", "", true)
+			abandoned <- errLogin
+		}()
+		// Each iteration reaches the prompt and then abandons it, exactly as a TTL
+		// expiry would: the login is cancelled at the one moment the shared reader
+		// is blocked on its line, and the line arrives once it is already gone.
+		<-source.reading
 		cancel()
-		if !errors.Is(errLogin, context.Canceled) {
+		if errLogin := <-abandoned; !errors.Is(errLogin, context.Canceled) {
 			t.Fatalf("login %d error = %v, want context.Canceled", attempt, errLogin)
+		}
+		source.queue("\n")
+		// The reader keeps a line its requester walked away from, so take it here
+		// rather than letting it carry into the next iteration's prompt.
+		if line := takeUnclaimedLine(t, provider.prompter, source); line != "\n" {
+			t.Fatalf("login %d: unclaimed line = %q", attempt, line)
 		}
 		if served := source.served(); served != attempt {
 			t.Fatalf("login %d: prompt reads served = %d, want %d", attempt, served, attempt)
@@ -213,6 +224,80 @@ func TestRepeatedManualPromptsDoNotAccumulateGoroutines(t *testing.T) {
 	}
 	if after := settledGoroutines(t); after > baseline {
 		t.Fatalf("goroutines = %d after %d logins, want no more than %d", after, logins, baseline)
+	}
+}
+
+// The shared reader used to commit each line to whoever asked for it before the
+// read even began, so a login cancelled while the reader was blocked took the
+// operator's next line down with it: the line landed in an abandoned buffered
+// channel and the following login sat waiting for a second one, with no way for
+// the operator to tell the line had been eaten rather than rejected.
+func TestLineTypedAfterACancelledLoginGoesToTheNextLogin(t *testing.T) {
+	provider, _ := newLoopbackLoginProvider(t, pluginconfig.Defaults())
+	source := newScriptedStdin()
+	provider.prompter = newStdinPrompter(source)
+	t.Cleanup(func() {
+		close(provider.prompter.requests)
+		source.close()
+	})
+	restoreDelay := cliManualPromptDelay
+	cliManualPromptDelay = time.Millisecond
+	t.Cleanup(func() { cliManualPromptDelay = restoreDelay })
+
+	ctxCancelled, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	abandoned := make(chan error, 1)
+	go func() {
+		_, _, errLogin := provider.runLocalLogin(ctxCancelled, provider.settings, "github", "", true)
+		abandoned <- errLogin
+	}()
+	// Cancel with the reader inside its blocking read, and wait for the login to
+	// return before a single character is typed: the interleaving is forced by
+	// the reader announcing the read, not by sleeping on it.
+	<-source.reading
+	cancelFirst()
+	if errLogin := <-abandoned; !errors.Is(errLogin, context.Canceled) {
+		t.Fatalf("cancelled login error = %v, want context.Canceled", errLogin)
+	}
+
+	// The operator now types one line, after the login it was meant for is gone.
+	source.queue(testCallbackURL + "?access_token=access&refresh_token=refresh\n")
+
+	ctxNext, cancelNext := context.WithCancel(context.Background())
+	defer cancelNext()
+	next := make(chan error, 1)
+	go func() {
+		_, _, errLogin := provider.runLocalLogin(ctxNext, provider.settings, "github", "", true)
+		next <- errLogin
+	}()
+	select {
+	case errLogin := <-next:
+		// This login's own callback address is a fresh random loopback path, so
+		// the line typed for the previous one is refused as foreign - which is
+		// only reachable if the line reached this login at all.
+		if !errors.Is(errLogin, errForeignCallbackURL) {
+			t.Fatalf("next login error = %v, want %v", errLogin, errForeignCallbackURL)
+		}
+	case <-source.reading:
+		cancelNext()
+		<-next
+		t.Fatal("the line typed after the cancelled login was dropped: the next login went back to stdin for another")
+	}
+}
+
+// takeUnclaimedLine claims the line the shared reader held back when the login
+// that asked for it had already gone, which is the handoff the next prompt would
+// otherwise receive.
+func takeUnclaimedLine(t *testing.T, prompter *stdinPrompter, source *scriptedStdin) string {
+	t.Helper()
+	reply := make(chan stdinReply)
+	prompter.requests <- stdinRequest{reply: reply, done: make(chan struct{})}
+	select {
+	case value := <-reply:
+		return value.line
+	case <-source.reading:
+		t.Fatal("the reader went back to stdin instead of handing over the line it was already holding")
+		return ""
 	}
 }
 
@@ -243,23 +328,21 @@ func settledGoroutines(t *testing.T) int {
 // scriptedStdin stands in for os.Stdin. Read blocks while no line is queued, so
 // an unanswered prompt parks the reader exactly as a real terminal would.
 type scriptedStdin struct {
-	lines  chan scriptedLine
-	reads  chan struct{}
-	closed chan struct{}
-}
-
-type scriptedLine struct {
-	text   string
-	onRead func()
+	lines chan string
+	reads chan struct{}
+	// reading is signalled as each Read begins, which is the one moment the
+	// shared reader is committed to a login and blocked on its line. A test that
+	// waits for it can cancel that login and type the line afterwards without
+	// sleeping on either.
+	reading chan struct{}
+	closed  chan struct{}
 }
 
 func newScriptedStdin() *scriptedStdin {
-	return &scriptedStdin{lines: make(chan scriptedLine, 16), reads: make(chan struct{}, 64), closed: make(chan struct{})}
+	return &scriptedStdin{lines: make(chan string, 16), reads: make(chan struct{}, 64), reading: make(chan struct{}, 16), closed: make(chan struct{})}
 }
 
-func (s *scriptedStdin) queue(text string, onRead func()) {
-	s.lines <- scriptedLine{text: text, onRead: onRead}
-}
+func (s *scriptedStdin) queue(text string) { s.lines <- text }
 
 func (s *scriptedStdin) served() int { return len(s.reads) }
 
@@ -267,12 +350,13 @@ func (s *scriptedStdin) close() { close(s.closed) }
 
 func (s *scriptedStdin) Read(p []byte) (int, error) {
 	select {
+	case s.reading <- struct{}{}:
+	default:
+	}
+	select {
 	case line := <-s.lines:
 		s.reads <- struct{}{}
-		if line.onRead != nil {
-			line.onRead()
-		}
-		return copy(p, line.text), nil
+		return copy(p, line), nil
 	case <-s.closed:
 		return 0, io.EOF
 	}

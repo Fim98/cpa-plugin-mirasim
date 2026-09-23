@@ -171,7 +171,12 @@ func adminErrorDetail(raw []byte) string {
 // first would swallow input meant for the other.
 func (p *Provider) promptForEmailCode(ctx context.Context) (string, error) {
 	requests := p.promptRequests()
-	reply := make(chan stdinReply, 1)
+	reply := make(chan stdinReply)
+	// abandoned tells the shared reader this prompt has stopped waiting, so a code
+	// typed after a cancellation or a timeout is kept for the next prompt instead
+	// of being dropped into a channel nobody is reading.
+	abandoned := make(chan struct{})
+	defer close(abandoned)
 	timer := time.NewTimer(emailCodeEntryTTL)
 	defer timer.Stop()
 	for {
@@ -180,7 +185,7 @@ func (p *Provider) promptForEmailCode(ctx context.Context) (string, error) {
 			return "", ctx.Err()
 		case <-timer.C:
 			return "", fmt.Errorf("Mirasim email sign-in timed out waiting for the code")
-		case requests <- reply:
+		case requests <- stdinRequest{reply: reply, done: abandoned}:
 			requests = nil
 			_, _ = os.Stdout.Write([]byte("Enter the Mirasim sign-in code: "))
 		case value := <-reply:
