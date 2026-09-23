@@ -143,6 +143,60 @@ type capturedHostLog struct {
 	fields  map[string]any
 }
 
+// callHost frees the host's response buffer through api->free_buffer on its way
+// out, so a host that supplies call without free_buffer is not a call that
+// fails — it is a call that succeeds and then jumps to address zero on the
+// return path, inside the host's own process. Every callHost caller funnels
+// through the one guard, so the guard has to refuse the incomplete table before
+// the call rather than after it.
+//
+// cgo cannot be used from a test file, so the table the guard reads is asserted
+// here directly; the live pointers callHost also checks are the same two.
+func TestAnIncompleteHostCallbackTableIsRefusedBeforeTheCall(t *testing.T) {
+	defer MirasimPluginShutdown()
+	restore := abiState.callbacks
+	t.Cleanup(func() {
+		abiState.Lock()
+		abiState.callbacks = restore
+		abiState.Unlock()
+	})
+
+	for name, table := range map[string]hostCallbackTable{
+		"free_buffer missing": {call: true},
+		"call missing":        {freeBuffer: true},
+		"empty table":         {},
+	} {
+		abiState.Lock()
+		abiState.callbacks = table
+		abiState.Unlock()
+		_, errCall := callHost[abiEmptyResponse](pluginabi.MethodHostLog, abiHostLogRequest{Level: "warn", Message: "probe"})
+		if errCall == nil {
+			t.Fatalf("%s: callHost returned no error", name)
+		}
+		// The message has to name the pointer that was missing: "unavailable"
+		// alone is also what an uninstalled host returns, and a guard that
+		// stopped checking free_buffer would still produce that.
+		want := "call"
+		if table.call {
+			want = "free_buffer"
+		}
+		if errCall.Error() != "host callback "+want+" is unavailable" {
+			t.Fatalf("%s: error = %v, want the %s pointer named", name, errCall, want)
+		}
+	}
+
+	// A whole table must not be refused by the same guard: with every pointer
+	// supplied the call proceeds to the host itself, which no test installs, and
+	// fails there instead.
+	abiState.Lock()
+	abiState.callbacks = hostCallbackTable{call: true, freeBuffer: true}
+	abiState.Unlock()
+	_, errWhole := callHost[abiEmptyResponse](pluginabi.MethodHostLog, abiHostLogRequest{Level: "warn", Message: "probe"})
+	if errWhole == nil || errWhole.Error() != "host callback is unavailable" {
+		t.Fatalf("whole table: error = %v, want the uninstalled-host error", errWhole)
+	}
+}
+
 // captureHostLog swaps the host log sink for one the test can read, and puts
 // the real one back afterwards.
 func captureHostLog(t *testing.T) *[]capturedHostLog {

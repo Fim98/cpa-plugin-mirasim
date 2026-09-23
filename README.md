@@ -53,7 +53,7 @@ The running plugin configuration determines `client-version`, including when loa
 
 `oauth-public-base-url` is gone, along with the separate OAuth bridge binary that served its callback. Nothing reports this at startup: CPA does not check plugin configuration keys against the fields a plugin declares, and YAML ignores a key nothing reads, so a configuration carrying the old key still loads cleanly and every other setting in it keeps working. Only browser login is affected, and it fails by never completing rather than by returning an error.
 
-If you set `oauth-public-base-url`, the browser and the CPA host are on different machines, so the replacement applies to you: delete the key and follow [Remote CPA hosts](#remote-cpa-hosts) to pin `oauth-callback-port` and forward it over SSH for the duration of a login. A host-local deployment that never set the key needs no new setting — an unset port takes an ephemeral one — and `--mirasim-login`, `--mirasim-login-email` and stored credentials from v1.1.x are unaffected either way.
+If you set `oauth-public-base-url`, delete the key. What replaces it depends on where the browser runs rather than on whether the key was ever set: when the browser and the CPA host are on different machines, follow [Remote CPA hosts](#remote-cpa-hosts) to pin `oauth-callback-port` and forward it over SSH for the duration of a login. A host-local deployment needs no new setting whether or not it carried the old key — an unset port takes an ephemeral one — and `--mirasim-login`, `--mirasim-login-email` and stored credentials from v1.1.x are unaffected either way.
 
 ## OAuth login
 

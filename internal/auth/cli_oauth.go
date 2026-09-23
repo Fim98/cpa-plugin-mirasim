@@ -93,7 +93,7 @@ func (p *Provider) runLocalLogin(ctx context.Context, settings pluginconfig.Sett
 		case <-manualTimer.C:
 			pasted = make(chan stdinReply)
 			promptRequests = p.promptRequests()
-		case promptRequests <- stdinRequest{reply: pasted, done: abandoned}:
+		case promptRequests <- stdinRequest{kind: promptOAuthCallbackURL, reply: pasted, done: abandoned}:
 			// Only ask once the reader is actually on this login's line.
 			promptRequests = nil
 			_, _ = os.Stdout.Write([]byte(manualPastePrompt))
@@ -192,11 +192,31 @@ type stdinReply struct {
 	err  error
 }
 
+// stdinPromptKind names the question a prompt is asking. A retained line is
+// only ever handed to a prompt asking the same question again: the operator
+// typed a callback URL or a sign-in code, not "the next line", and the two are
+// not interchangeable.
+type stdinPromptKind int
+
+const (
+	promptOAuthCallbackURL stdinPromptKind = iota
+	promptEmailCode
+)
+
+// retainedLineTTL bounds how long the reader holds a line whose prompt walked
+// away. Keeping it is worth doing — the operator typed it once — but not worth
+// doing forever: the line may be a callback URL carrying an access token, and a
+// line handed over long after it was typed answers a question the operator no
+// longer remembers asking. A variable only so tests can shorten it.
+var retainedLineTTL = 2 * time.Minute
+
 // stdinRequest is one prompt's claim on the shared reader. reply is unbuffered
 // and done is closed once the prompt's owner has stopped waiting, which is what
 // lets the reader tell a line that will never be taken from one that has simply
-// not been typed yet.
+// not been typed yet. kind says what the prompt is asking for, so a line kept
+// back for one question is never spent on another.
 type stdinRequest struct {
+	kind  stdinPromptKind
 	reply chan<- stdinReply
 	done  <-chan struct{}
 }
@@ -223,19 +243,61 @@ func newStdinPrompter(source io.Reader) *stdinPrompter {
 func (s *stdinPrompter) serve(source io.Reader) {
 	reader := bufio.NewReader(source)
 	var pending *stdinReply
-	for request := range s.requests {
+	var pendingKind stdinPromptKind
+	var retention *time.Timer
+	var retired <-chan time.Time
+	var retainedUntil time.Time
+	// forget drops a retained line and the bound that came with it. The line is
+	// operator input and may carry a credential, so it is released rather than
+	// left in the reader for a prompt that may never arrive.
+	forget := func() {
+		pending = nil
+		retainedUntil = time.Time{}
+		if retention != nil {
+			retention.Stop()
+			retention, retired = nil, nil
+		}
+	}
+	for {
+		var request stdinRequest
+		var open bool
+		select {
+		case request, open = <-s.requests:
+			if !open {
+				forget()
+				return
+			}
+		case <-retired:
+			// Nothing asked for the retained line inside its lifetime.
+			forget()
+			continue
+		}
+		// A line kept for one question cannot answer another, and one kept too
+		// long should not answer anything. Either way this prompt reads fresh:
+		// losing a line costs the operator a retype, while spending it on the
+		// wrong question loses it just the same and fails a login as well.
+		if pending != nil && (request.kind != pendingKind || !time.Now().Before(retainedUntil)) {
+			forget()
+		}
 		if pending == nil {
 			line, errRead := reader.ReadString('\n')
 			pending = &stdinReply{line: line, err: errRead}
+			pendingKind = request.kind
 		}
 		select {
 		case request.reply <- *pending:
-			pending = nil
+			forget()
 		case <-request.done:
 			// The login that asked for this line gave up while the read was
-			// blocked on it. Hold the line for the next prompt rather than
-			// discarding it: the operator typed it once, and discarding it here
-			// left the next prompt waiting for a second line it never asked for.
+			// blocked on it. Hold the line for the next prompt of the same kind
+			// rather than discarding it: the operator typed it once, and
+			// discarding it here left the next prompt waiting for a second line
+			// it never asked for.
+			if retention == nil {
+				retention = time.NewTimer(retainedLineTTL)
+				retired = retention.C
+				retainedUntil = time.Now().Add(retainedLineTTL)
+			}
 		}
 	}
 }

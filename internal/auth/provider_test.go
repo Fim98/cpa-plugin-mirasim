@@ -285,13 +285,129 @@ func TestLineTypedAfterACancelledLoginGoesToTheNextLogin(t *testing.T) {
 	}
 }
 
+// Holding a line for the next prompt is only right when the next prompt asks
+// the same question. A callback URL typed for a cancelled OAuth login cannot
+// answer an email-code prompt: handing it over spends the operator's input on a
+// question it was never meant for, the sign-in fails on a code it never saw, and
+// the line is gone either way. The email prompt must go back to stdin instead.
+func TestACallbackURLTypedForACancelledLoginIsNotHandedToAnEmailCodePrompt(t *testing.T) {
+	provider, _ := newLoopbackLoginProvider(t, pluginconfig.Defaults())
+	source := newScriptedStdin()
+	provider.prompter = newStdinPrompter(source)
+	t.Cleanup(func() {
+		close(provider.prompter.requests)
+		source.close()
+	})
+	restoreDelay := cliManualPromptDelay
+	cliManualPromptDelay = time.Millisecond
+	t.Cleanup(func() { cliManualPromptDelay = restoreDelay })
+
+	ctxCancelled, cancelLogin := context.WithCancel(context.Background())
+	defer cancelLogin()
+	abandoned := make(chan error, 1)
+	go func() {
+		_, _, errLogin := provider.runLocalLogin(ctxCancelled, provider.settings, "github", "", true)
+		abandoned <- errLogin
+	}()
+	// Cancel with the reader inside its blocking read and wait for the login to
+	// return, so the line below is typed with no OAuth login left to take it.
+	<-source.reading
+	cancelLogin()
+	if errLogin := <-abandoned; !errors.Is(errLogin, context.Canceled) {
+		t.Fatalf("cancelled login error = %v, want context.Canceled", errLogin)
+	}
+	source.queue(testCallbackURL + "?access_token=access&refresh_token=refresh\n")
+
+	// An email sign-in now asks for the code Mirasim mailed.
+	ctxCode, cancelCode := context.WithCancel(context.Background())
+	defer cancelCode()
+	entered := make(chan string, 1)
+	failed := make(chan error, 1)
+	go func() {
+		code, errPrompt := provider.promptForEmailCode(ctxCode)
+		if errPrompt != nil {
+			failed <- errPrompt
+			return
+		}
+		entered <- code
+	}()
+	select {
+	case <-entered:
+		// The value is deliberately not echoed: it is a callback URL carrying an
+		// access token, and this file's rule is that no part of one reaches output.
+		t.Fatal("the email-code prompt was handed the callback URL typed for the cancelled OAuth login")
+	case errPrompt := <-failed:
+		t.Fatalf("email-code prompt error = %v", errPrompt)
+	case <-source.reading:
+		// It went back to stdin for a code of its own, which is the only thing it
+		// can do with a line it cannot answer with.
+	}
+
+	// The same prompt must still take the line actually typed for it.
+	source.queue("482913\n")
+	select {
+	case code := <-entered:
+		if strings.TrimSpace(code) != "482913" {
+			t.Fatal("the email-code prompt returned something other than the code typed at it")
+		}
+	case errPrompt := <-failed:
+		t.Fatalf("email-code prompt error = %v", errPrompt)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the email-code prompt never received the code typed for it")
+	}
+}
+
+// A retained line cannot be held indefinitely. It is operator input, possibly a
+// callback URL carrying an access token, and a line handed over long after it
+// was typed answers a prompt the operator has stopped associating with it. Once
+// its lifetime lapses the reader drops it and the next prompt reads fresh, even
+// when that prompt asks the very same question.
+func TestARetainedLineIsDroppedOnceItsLifetimeLapses(t *testing.T) {
+	source := newScriptedStdin()
+	prompter := newStdinPrompter(source)
+	t.Cleanup(func() {
+		close(prompter.requests)
+		source.close()
+	})
+	restoreTTL := retainedLineTTL
+	retainedLineTTL = time.Millisecond
+	t.Cleanup(func() { retainedLineTTL = restoreTTL })
+
+	// A prompt that walks away while the reader is blocked on its line, which is
+	// the only way a line is ever retained.
+	abandoned := make(chan struct{})
+	prompter.requests <- stdinRequest{kind: promptOAuthCallbackURL, reply: make(chan stdinReply), done: abandoned}
+	<-source.reading
+	close(abandoned)
+	source.queue(testCallbackURL + "?access_token=access&refresh_token=refresh\n")
+
+	// The lifetime timer and the deadline the next request is checked against
+	// both drop the line, so waiting far past a one-millisecond lifetime gives
+	// the same answer whichever of the two gets there first.
+	time.Sleep(50 * time.Millisecond)
+
+	reply := make(chan stdinReply)
+	prompter.requests <- stdinRequest{kind: promptOAuthCallbackURL, reply: reply, done: make(chan struct{})}
+	select {
+	case <-reply:
+		// Not echoed: the line the reader was holding carries an access token.
+		t.Fatal("the reader handed over a line it had held past its lifetime")
+	case <-source.reading:
+		// It went back to stdin, which is what a lapsed line leaves it to do.
+	}
+	source.queue("fresh\n")
+	if value := <-reply; strings.TrimSpace(value.line) != "fresh" {
+		t.Fatal("the reader did not deliver the line typed after the retained one lapsed")
+	}
+}
+
 // takeUnclaimedLine claims the line the shared reader held back when the login
 // that asked for it had already gone, which is the handoff the next prompt would
 // otherwise receive.
 func takeUnclaimedLine(t *testing.T, prompter *stdinPrompter, source *scriptedStdin) string {
 	t.Helper()
 	reply := make(chan stdinReply)
-	prompter.requests <- stdinRequest{reply: reply, done: make(chan struct{})}
+	prompter.requests <- stdinRequest{kind: promptOAuthCallbackURL, reply: reply, done: make(chan struct{})}
 	select {
 	case value := <-reply:
 		return value.line

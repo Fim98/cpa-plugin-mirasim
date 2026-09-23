@@ -185,7 +185,7 @@ func (p *Provider) promptForEmailCode(ctx context.Context) (string, error) {
 			return "", ctx.Err()
 		case <-timer.C:
 			return "", fmt.Errorf("Mirasim email sign-in timed out waiting for the code")
-		case requests <- stdinRequest{reply: reply, done: abandoned}:
+		case requests <- stdinRequest{kind: promptEmailCode, reply: reply, done: abandoned}:
 			requests = nil
 			_, _ = os.Stdout.Write([]byte("Enter the Mirasim sign-in code: "))
 		case value := <-reply:

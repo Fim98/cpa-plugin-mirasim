@@ -62,9 +62,42 @@ import (
 
 var abiState = struct {
 	sync.RWMutex
-	host   *C.cliproxy_host_api
-	plugin *mirasimplugin.MirasimPlugin
+	host      *C.cliproxy_host_api
+	callbacks hostCallbackTable
+	plugin    *mirasimplugin.MirasimPlugin
 }{}
+
+// hostCallbackTable records which of the host's callback pointers the loader
+// actually supplied. callHost dereferences both api->call and api->free_buffer,
+// and across the cgo boundary a nil function pointer is not a Go panic that
+// unwinds into an error — it is a jump to address zero that takes the whole CPA
+// process down. Both are therefore checked before the first dereference, in
+// callHost, which is the single funnel every one of its six callers goes
+// through.
+//
+// The two pointers are recorded here, in Go, at the moment the table is
+// installed, because cgo cannot be used from a test file: this record is what
+// makes a host that supplies call without free_buffer reachable from a test at
+// all. The live pointers are still checked in callHost as well — that check is
+// the one standing between us and the jump, this one is the one that can be
+// proven.
+type hostCallbackTable struct {
+	call       bool
+	freeBuffer bool
+}
+
+// missing names the callback the host left out, or "" when the table is whole.
+// An empty table reports call: no host has been installed, which from this side
+// of the ABI is the same answer.
+func (t hostCallbackTable) missing() string {
+	switch {
+	case !t.call:
+		return "call"
+	case !t.freeBuffer:
+		return "free_buffer"
+	}
+	return ""
+}
 
 type abiLifecycleRequest struct {
 	ConfigYAML []byte `json:"config_yaml"`
@@ -198,6 +231,7 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 	}
 	abiState.Lock()
 	abiState.host = host
+	abiState.callbacks = hostCallbackTable{call: host.call != nil, freeBuffer: host.free_buffer != nil}
 	abiState.Unlock()
 	plugin.abi_version = C.uint32_t(pluginabi.ABIVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.MirasimPluginCall)
@@ -242,6 +276,7 @@ func MirasimPluginShutdown() {
 	abiState.Lock()
 	abiState.plugin = nil
 	abiState.host = nil
+	abiState.callbacks = hostCallbackTable{}
 	abiState.Unlock()
 }
 
@@ -595,8 +630,16 @@ func callHost[T any](method string, request any) (T, error) {
 	var zero T
 	abiState.RLock()
 	host := abiState.host
+	callbacks := abiState.callbacks
 	abiState.RUnlock()
-	if host == nil || host.call == nil {
+	// Both pointers are checked, not just the one this call starts with: the
+	// response buffer is freed through api->free_buffer on the way out, so a
+	// host that supplied call alone would be called successfully and then
+	// dereferenced through a nil on the return path.
+	if unavailable := callbacks.missing(); unavailable != "" {
+		return zero, fmt.Errorf("host callback %s is unavailable", unavailable)
+	}
+	if host == nil || host.call == nil || host.free_buffer == nil {
 		return zero, fmt.Errorf("host callback is unavailable")
 	}
 	rawRequest, errMarshal := json.Marshal(request)
