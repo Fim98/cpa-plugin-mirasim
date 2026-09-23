@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -19,70 +17,41 @@ import (
 
 const cliManualPromptDelay = 15 * time.Second
 
-type localOAuthResult struct {
-	state        string
-	accessToken  string
-	refreshToken string
-	errorMessage string
-}
-
 func (p *Provider) runLocalLogin(ctx context.Context, settings pluginconfig.Settings, provider string, proxyURL string, noBrowser bool) (pluginapi.AuthData, []byte, error) {
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	if provider == "" {
-		provider = "github"
+	loginProvider, errProvider := resolveLoginProvider(provider, settings.OAuthLoginProvider)
+	if errProvider != nil {
+		return pluginapi.AuthData{}, nil, errProvider
 	}
-	if !providerSlug.MatchString(provider) {
-		return pluginapi.AuthData{}, nil, fmt.Errorf("invalid Mirasim OAuth provider")
-	}
-	providers, errDiscovery := discoverLoginProviders(ctx, settings.AdminURL, proxyURL)
+	offered, errDiscovery := discoverLoginProviders(ctx, settings.AdminURL, proxyURL)
 	if errDiscovery != nil {
 		return pluginapi.AuthData{}, nil, errDiscovery
 	}
-	if !providerOffered(providers, provider) {
-		return pluginapi.AuthData{}, nil, fmt.Errorf("Mirasim OAuth provider %q is not currently offered", provider)
+	if !providerOffered(offered, loginProvider) {
+		return pluginapi.AuthData{}, nil, unsupportedLoginProviderError(loginProvider, offered)
 	}
-	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
-	if errListen != nil {
-		return pluginapi.AuthData{}, nil, fmt.Errorf("start Mirasim OAuth callback listener: %w", errListen)
-	}
-	defer func() { _ = listener.Close() }()
 	state, errState := randomOAuthValue(32)
 	if errState != nil {
 		return pluginapi.AuthData{}, nil, errState
 	}
-	pathToken, errPath := randomOAuthValue(18)
-	if errPath != nil {
-		return pluginapi.AuthData{}, nil, errPath
+	// The same loopback capture the Management Center flow uses, so both paths
+	// share one listener, one single-use random callback path, and one set of
+	// credential checks.
+	capture, errCapture := startLoopbackCapture(loopbackCallbackPort(settings.OAuthCallbackPort), state)
+	if errCapture != nil {
+		return pluginapi.AuthData{}, nil, errCapture
 	}
-	callbackPath := "/callback/" + pathToken
-	callbackURL := "http://" + listener.Addr().String() + callbackPath
-	authURL, errURL := buildMirasimOAuthURL(settings.AdminURL, provider, callbackURL, state)
+	defer capture.Close()
+	authURL, errURL := buildMirasimOAuthURL(settings.AdminURL, loginProvider, capture.CallbackURL(), state)
 	if errURL != nil {
 		return pluginapi.AuthData{}, nil, errURL
 	}
-
-	resultCh := make(chan localOAuthResult, 1)
-	server := &http.Server{Handler: localOAuthHandler(callbackPath, state, resultCh), ReadHeaderTimeout: 5 * time.Second}
-	go func() {
-		if errServe := server.Serve(listener); errServe != nil && errServe != http.ErrServerClosed {
-			select {
-			case resultCh <- localOAuthResult{errorMessage: "Mirasim OAuth callback listener stopped"}:
-			default:
-			}
-		}
-	}()
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-	}()
 
 	prompt := []byte("Open this URL to authenticate Mirasim:\n\n" + authURL + "\n\n")
 	_, _ = os.Stdout.Write(prompt)
 	if !noBrowser {
 		_ = openBrowser(authURL)
 	}
-	timer := time.NewTimer(oauthLoginTTL)
+	timer := time.NewTimer(cliLoginTTL)
 	defer timer.Stop()
 	manualTimer := time.NewTimer(cliManualPromptDelay)
 	defer manualTimer.Stop()
@@ -94,7 +63,7 @@ func (p *Provider) runLocalLogin(ctx context.Context, settings pluginconfig.Sett
 			return pluginapi.AuthData{}, nil, ctx.Err()
 		case <-timer.C:
 			return pluginapi.AuthData{}, nil, fmt.Errorf("Mirasim OAuth login timed out")
-		case result := <-resultCh:
+		case result := <-capture.Results():
 			return p.finishLocalLogin(ctx, settings, proxyURL, state, result)
 		case <-manualTimer.C:
 			manualInput, manualError = asyncPrompt("Paste the Mirasim callback URL (or press Enter to keep waiting): ")
@@ -134,66 +103,6 @@ func (p *Provider) finishLocalLogin(ctx context.Context, settings pluginconfig.S
 	fileName := storage.DefaultAuthFileName()
 	auth := storage.AuthData(fileName, fileName, client.NextRefreshAfter(time.Now()))
 	return auth, []byte("Mirasim authentication successful.\n"), nil
-}
-
-func localOAuthHandler(callbackPath, expectedState string, results chan<- localOAuthResult) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
-		for key, values := range browserHeaders(nil) {
-			for _, value := range values {
-				w.Header().Add(key, value)
-			}
-		}
-		if !strings.EqualFold(r.Method, http.MethodGet) {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		result := oauthResultFromValues(r.URL.Query())
-		// The listener is loopback-only and callbackPath contains 144 bits
-		// of randomness. That exact one-use route is the channel binding when
-		// current Mirasim omits its separately supplied state parameter.
-		bindMissingOAuthState(&result, expectedState)
-		if !constantTimeEqual(expectedState, result.state) {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte("<html><body><h1>Invalid OAuth state</h1></body></html>"))
-			return
-		}
-		if result.errorMessage == "" && (result.accessToken == "" || result.refreshToken == "") {
-			result.errorMessage = "callback did not include renewable credentials"
-		}
-		select {
-		case results <- result:
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("<html><body><h1>Mirasim sign-in complete</h1><p>You may close this window.</p></body></html>"))
-		default:
-			w.WriteHeader(http.StatusConflict)
-			_, _ = w.Write([]byte("<html><body><h1>This callback was already used</h1></body></html>"))
-		}
-	})
-	return mux
-}
-
-func bindMissingOAuthState(result *localOAuthResult, expectedState string) {
-	if result != nil && strings.TrimSpace(result.state) == "" {
-		result.state = strings.TrimSpace(expectedState)
-	}
-}
-
-func oauthResultFromValues(values url.Values) localOAuthResult {
-	accessToken := strings.TrimSpace(values.Get("access_token"))
-	if accessToken == "" {
-		accessToken = strings.TrimSpace(values.Get("token"))
-	}
-	errorMessage := ""
-	if strings.TrimSpace(values.Get("error")) != "" {
-		errorMessage = "Mirasim cancelled or rejected the login"
-	}
-	return localOAuthResult{
-		state:        strings.TrimSpace(values.Get("state")),
-		accessToken:  accessToken,
-		refreshToken: strings.TrimSpace(values.Get("refresh_token")),
-		errorMessage: errorMessage,
-	}
 }
 
 func parseManualOAuthResult(input string) (localOAuthResult, bool, error) {

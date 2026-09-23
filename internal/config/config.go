@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -11,6 +12,9 @@ const (
 	DefaultRelayURL      = "https://relay.mirasim.ai"
 	DefaultAdminURL      = "https://auth.mirasim.ai"
 	DefaultClientVersion = "0.0.336"
+	// DefaultOAuthLoginProvider is the Mirasim sign-in provider used when neither
+	// the login caller nor the configuration names one.
+	DefaultOAuthLoginProvider = "github"
 )
 
 // Settings contains public provider and OAuth callback defaults. Credential
@@ -21,9 +25,14 @@ type Settings struct {
 	RelayURL      string `yaml:"relay-url"`
 	AdminURL      string `yaml:"admin-url"`
 	ClientVersion string `yaml:"client-version"`
-	// OAuthPublicBaseURL is the externally reachable CPA origin used for the
-	// browser callback. It is intentionally not persisted in auth records.
-	OAuthPublicBaseURL string `yaml:"oauth-public-base-url"`
+	// OAuthLoginProvider names the Mirasim sign-in provider used for browser login
+	// when the caller does not request one.
+	OAuthLoginProvider string `yaml:"oauth-login-provider"`
+	// OAuthCallbackPort pins the loopback port that receives the Mirasim OAuth
+	// callback, so a remote deployment can reach it over an SSH tunnel. Empty or
+	// out of range takes an ephemeral port. Held as text because YAML may quote it
+	// and the environment override is text either way.
+	OAuthCallbackPort string `yaml:"oauth-callback-port"`
 	// HTTP1Only asks the host transport to skip HTTP/2 negotiation for relay
 	// calls. On by default: the official client offers only http/1.1 in its TLS
 	// ALPN, even though the relay itself will negotiate h2 when offered it.
@@ -78,8 +87,11 @@ func merge(settings, configured Settings) Settings {
 	if value := strings.TrimSpace(configured.ClientVersion); value != "" {
 		settings.ClientVersion = value
 	}
-	if value := cleanURL(configured.OAuthPublicBaseURL); value != "" {
-		settings.OAuthPublicBaseURL = value
+	if value := cleanProvider(configured.OAuthLoginProvider); value != "" {
+		settings.OAuthLoginProvider = value
+	}
+	if value := cleanPort(configured.OAuthCallbackPort); value != "" {
+		settings.OAuthCallbackPort = value
 	}
 	if configured.HTTP1Only != nil {
 		value := *configured.HTTP1Only
@@ -100,7 +112,8 @@ func Defaults() Settings {
 		RelayURL:              firstNonEmpty(cleanURL(os.Getenv("MIRASIM_RELAY_URL")), DefaultRelayURL),
 		AdminURL:              firstNonEmpty(cleanURL(os.Getenv("MIRASIM_ADMIN_URL")), DefaultAdminURL),
 		ClientVersion:         firstNonEmpty(strings.TrimSpace(os.Getenv("MIRASIM_CLIENT_VERSION")), DefaultClientVersion),
-		OAuthPublicBaseURL:    cleanURL(os.Getenv("MIRASIM_OAUTH_PUBLIC_BASE_URL")),
+		OAuthLoginProvider:    firstNonEmpty(cleanProvider(os.Getenv("MIRASIM_OAUTH_LOGIN_PROVIDER")), DefaultOAuthLoginProvider),
+		OAuthCallbackPort:     cleanPort(os.Getenv("MIRASIM_OAUTH_CALLBACK_PORT")),
 		HTTP1Only:             boolOrDefault(os.Getenv("MIRASIM_HTTP1_ONLY"), true),
 		LowercaseRelayHeaders: boolOrDefault(os.Getenv("MIRASIM_LOWERCASE_RELAY_HEADERS"), true),
 	}
@@ -129,6 +142,21 @@ func optionalBool(value string) *bool {
 
 func cleanURL(value string) string {
 	return strings.TrimRight(strings.TrimSpace(value), "/")
+}
+
+func cleanProvider(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+// cleanPort keeps only a usable TCP port. Anything else, including an explicit 0
+// and a value out of range, is dropped so the loopback OAuth callback falls back
+// to an ephemeral port instead of failing to bind.
+func cleanPort(value string) string {
+	port, errParse := strconv.Atoi(strings.TrimSpace(value))
+	if errParse != nil || port < 1 || port > 65535 {
+		return ""
+	}
+	return strconv.Itoa(port)
 }
 
 func firstNonEmpty(values ...string) string {
