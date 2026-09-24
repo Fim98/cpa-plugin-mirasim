@@ -42,6 +42,10 @@ type Settings struct {
 	// official client spells every header lower case. The host implements this
 	// by rewriting the request line, which requires HTTP/1.1.
 	LowercaseRelayHeaders *bool `yaml:"lowercase-relay-headers"`
+	// AuthMode selects the relay credential form: "device" (default) mints a
+	// device ticket; "access-token" signs with the account access token, which
+	// is what the official desktop client does for account sessions.
+	AuthMode string `yaml:"auth-mode"`
 }
 
 type rootConfig struct {
@@ -158,6 +162,9 @@ func merge(settings, configured Settings) Settings {
 		value := *configured.LowercaseRelayHeaders
 		settings.LowercaseRelayHeaders = &value
 	}
+	if value := strings.TrimSpace(configured.AuthMode); value != "" {
+		settings.AuthMode = value
+	}
 	return settings
 }
 
@@ -173,6 +180,7 @@ func Defaults() Settings {
 		OAuthCallbackPort:     cleanPort(os.Getenv("MIRASIM_OAUTH_CALLBACK_PORT")),
 		HTTP1Only:             boolOrDefault(os.Getenv("MIRASIM_HTTP1_ONLY"), true),
 		LowercaseRelayHeaders: boolOrDefault(os.Getenv("MIRASIM_LOWERCASE_RELAY_HEADERS"), true),
+		AuthMode:              strings.TrimSpace(os.Getenv("MIRASIM_AUTH_MODE")),
 	}
 }
 

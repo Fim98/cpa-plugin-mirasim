@@ -476,14 +476,27 @@ func (c *Client) authHeadersWithMetadata(ctx context.Context, client pluginapi.H
 	if errSigner := c.loadSignerLocked(); errSigner != nil {
 		return nil, errSigner
 	}
-	if forceTicket {
-		if errRefusal := c.refuseTicketLocked(); errRefusal != nil {
-			return nil, errRefusal
+	// Access-token mode authorizes and signs with the account access token
+	// directly, the way the official desktop client authorizes account
+	// sessions, and never touches the device-ticket mint.
+	credential := ""
+	if !c.options.AccessTokenAuth() {
+		if forceTicket {
+			if errRefusal := c.refuseTicketLocked(); errRefusal != nil {
+				return nil, errRefusal
+			}
 		}
-	}
-	ticket, errTicket := c.ticketLocked(ctx, client)
-	if errTicket != nil {
-		return nil, errTicket
+		ticket, errTicket := c.ticketLocked(ctx, client)
+		if errTicket != nil {
+			return nil, errTicket
+		}
+		credential = ticket
+	} else {
+		token, errToken := c.accessCredentialLocked()
+		if errToken != nil {
+			return nil, errToken
+		}
+		credential = token
 	}
 	var metadata map[string]string
 	if !controlPlane {
@@ -493,11 +506,12 @@ func (c *Client) authHeadersWithMetadata(ctx context.Context, client pluginapi.H
 		}
 		metadata = relayMetadata
 	}
-	headers, errSign := c.signatureHeadersLocked(method, requestPath, ticket, metadata, body)
+
+	headers, errSign := c.signatureHeadersLocked(method, requestPath, credential, metadata, body)
 	if errSign != nil {
 		return nil, errSign
 	}
-	headers.Set("Authorization", "Bearer "+ticket)
+	headers.Set("Authorization", "Bearer "+credential)
 	if controlPlane {
 		return headers, nil
 	}

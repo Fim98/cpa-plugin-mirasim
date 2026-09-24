@@ -27,6 +27,7 @@ func Build(configYAML []byte) pluginapi.Plugin {
 	pool := mirasim.NewPool(mirasim.RelayOptions{
 		Collect:               settings.Collect,
 		Locale:                settings.Locale,
+		AuthMode:              settings.AuthMode,
 		HTTP1Only:             settings.HTTP1Only != nil && *settings.HTTP1Only,
 		LowercaseRelayHeaders: settings.LowercaseRelayHeaders != nil && *settings.LowercaseRelayHeaders,
 	})

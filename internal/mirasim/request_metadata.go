@@ -10,6 +10,12 @@ import (
 type RelayOptions struct {
 	Collect *bool
 	Locale  string
+	// AuthMode selects the relay credential form. Empty or "device" mints a
+	// short-lived device ticket (the default). "access-token" signs relay calls
+	// with the account's access token directly, which is what the official
+	// desktop client does for account sessions; it also avoids the
+	// /v1/device/session mint that some relays refuse by region or rate.
+	AuthMode string
 	// HTTP1Only and LowercaseRelayHeaders shape the outbound wire profile the
 	// host applies to relay calls. Both default on: a capture of the official
 	// 0.0.336 client shows it offering only http/1.1 in its TLS ALPN and
@@ -17,6 +23,13 @@ type RelayOptions struct {
 	// and send canonical X-Mirasim-* names.
 	HTTP1Only             bool
 	LowercaseRelayHeaders bool
+}
+
+// AccessTokenAuth reports whether relay calls should authorize with the
+// account's access token instead of a minted device ticket.
+func (o RelayOptions) AccessTokenAuth() bool {
+	mode := strings.ToLower(strings.TrimSpace(o.AuthMode))
+	return mode == "access-token" || mode == "access_token" || mode == "accesstoken"
 }
 
 // relayHeaderProfile lists the header names a relay call can carry, in the
