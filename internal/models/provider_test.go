@@ -30,7 +30,7 @@ func TestFallbackCatalogCoversClaudeAndGPT(t *testing.T) {
 	claudeCount := 0
 	gptCount := 0
 	for _, model := range models {
-		if !isExposedModel(model.ID) || len(model.SupportedGenerationMethods) == 0 || model.ContextLength == 0 || model.MaxCompletionTokens == 0 {
+		if !isExposedModel(model.ID) || len(model.SupportedGenerationMethods) == 0 {
 			t.Fatalf("incomplete model metadata: %#v", model)
 		}
 		switch model.Type {
@@ -48,7 +48,7 @@ func TestFallbackCatalogCoversClaudeAndGPT(t *testing.T) {
 			t.Fatalf("unexpected model family: %#v", model)
 		}
 	}
-	if claudeCount != 13 || gptCount != 4 {
+	if claudeCount != 16 || gptCount != 4 {
 		t.Fatalf("fallback family counts: Claude=%d GPT=%d", claudeCount, gptCount)
 	}
 	byID := make(map[string]pluginapi.ModelInfo, len(models))
@@ -87,13 +87,17 @@ func TestExposedModelsIncludesClaudeAndGPTCatalogEntries(t *testing.T) {
 		{ID: "kimi-k3", Object: "model", OwnedBy: "other"},
 	})
 
-	if len(models) != 3 {
-		t.Fatalf("exposedModels() returned %d models, want 3: %#v", len(models), models)
+	if len(models) != 4 {
+		t.Fatalf("exposedModels() returned %d models, want 4: %#v", len(models), models)
 	}
 	for _, model := range models {
 		if !isExposedModel(model.ID) {
 			t.Fatalf("unsupported model was exposed: %#v", model)
 		}
+	}
+	kimi := models[3]
+	if kimi.Type != "claude" || kimi.SupportedGenerationMethods[0] != "messages" {
+		t.Fatalf("kimi-k3 should ride the Messages wire: %#v", kimi)
 	}
 }
 

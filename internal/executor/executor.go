@@ -50,7 +50,17 @@ func (e *Executor) Execute(ctx context.Context, req pluginapi.ExecutorRequest) (
 	if errBuild != nil {
 		return pluginapi.ExecutorResponse{}, errBuild
 	}
-	resp, errDo := client.Do(ctx, req.HTTPClient, http.MethodPost, route.Path, route.Query, requestHeaders(req, route.Format), requestBody)
+	outputFormat := responseFormat(req)
+	// The relay's Messages wire answers a non-streaming request with a plain
+	// JSON message, but CPA's Claude-to-X response translators consume an SSE
+	// transcript (the same contract CPA's own Claude executor keeps: "use an
+	// upstream stream whenever the downstream response needs translation from
+	// Claude events"). When the downstream format differs from the wire, stream
+	// upstream and aggregate the transcript for the non-stream translator.
+	if route.Format == sdktranslator.FormatClaude && outputFormat != sdktranslator.FormatClaude {
+		return e.executeClaudeViaStream(ctx, req, client, requestBody, route)
+	}
+	resp, errDo := client.DoWithAgent(ctx, req.HTTPClient, http.MethodPost, route.Path, route.Query, requestHeaders(req, route.Format), requestBody, route.Agent)
 	if errDo != nil {
 		return pluginapi.ExecutorResponse{}, errDo
 	}
@@ -64,7 +74,6 @@ func (e *Executor) Execute(ctx context.Context, req pluginapi.ExecutorRequest) (
 			return pluginapi.ExecutorResponse{}, errDo
 		}
 	}
-	outputFormat := responseFormat(req)
 	payload, errTranslate := translateNonStream(ctx, route.Format, outputFormat, normalizeModel(req.Model), req.OriginalRequest, requestBody, upstreamPayload)
 	if errTranslate != nil {
 		return pluginapi.ExecutorResponse{}, errTranslate
@@ -72,6 +81,68 @@ func (e *Executor) Execute(ctx context.Context, req pluginapi.ExecutorRequest) (
 	headers := cloneHeaders(resp.Headers)
 	headers.Set("Content-Type", "application/json")
 	return pluginapi.ExecutorResponse{Payload: payload, Headers: headers}, nil
+}
+
+// executeClaudeViaStream serves a non-streaming downstream request over the
+// Messages wire by streaming upstream and aggregating the full SSE transcript,
+// which is the input shape CPA's Claude-to-X non-stream translators expect.
+func (e *Executor) executeClaudeViaStream(ctx context.Context, req pluginapi.ExecutorRequest, client *mirasim.Client, requestBody []byte, route providerRoute) (pluginapi.ExecutorResponse, error) {
+	streamBody, errNormalize := normalizeBody(requestBody, normalizeModel(req.Model), true, route.Format)
+	if errNormalize != nil {
+		return pluginapi.ExecutorResponse{}, errNormalize
+	}
+	resp, errDo := client.DoStreamWithAgent(ctx, req.HTTPClient, http.MethodPost, route.Path, route.Query, requestHeaders(req, route.Format), streamBody, route.Agent)
+	if errDo != nil {
+		return pluginapi.ExecutorResponse{}, errDo
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body := readErrorStream(ctx, resp.Chunks)
+		return pluginapi.ExecutorResponse{}, mirasim.NewStatusError(resp.StatusCode, body, resp.Headers)
+	}
+	transcript, errAggregate := aggregateClaudeSSE(ctx, resp.Chunks)
+	if errAggregate != nil {
+		return pluginapi.ExecutorResponse{}, errAggregate
+	}
+	payload, errTranslate := translateNonStream(ctx, route.Format, responseFormat(req), normalizeModel(req.Model), req.OriginalRequest, requestBody, transcript)
+	if errTranslate != nil {
+		return pluginapi.ExecutorResponse{}, errTranslate
+	}
+	headers := cloneHeaders(resp.Headers)
+	headers.Set("Content-Type", "application/json")
+	return pluginapi.ExecutorResponse{Payload: payload, Headers: headers}, nil
+}
+
+// aggregateClaudeSSE joins a Messages SSE stream back into the "data: ..."
+// transcript form CPA's translators expect, dropping the terminating marker.
+func aggregateClaudeSSE(ctx context.Context, chunks <-chan pluginapi.HTTPStreamChunk) ([]byte, error) {
+	var out bytes.Buffer
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case chunk, ok := <-chunks:
+			if !ok {
+				if out.Len() == 0 {
+					return nil, fmt.Errorf("Mirasim stream ended without events")
+				}
+				return out.Bytes(), nil
+			}
+			if chunk.Err != nil {
+				if out.Len() > 0 {
+					return out.Bytes(), nil
+				}
+				return nil, chunk.Err
+			}
+			for _, line := range bytes.Split(bytes.TrimRight(chunk.Payload, "\n"), []byte("\n")) {
+				line = bytes.TrimSpace(line)
+				if len(line) == 0 || bytes.Equal(line, []byte("data: [DONE]")) {
+					continue
+				}
+				out.Write(line)
+				out.WriteByte('\n')
+			}
+		}
+	}
 }
 
 func (e *Executor) ExecuteStream(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorStreamResponse, error) {
@@ -87,7 +158,7 @@ func (e *Executor) ExecuteStream(ctx context.Context, req pluginapi.ExecutorRequ
 	if errBuild != nil {
 		return pluginapi.ExecutorStreamResponse{}, errBuild
 	}
-	resp, errDo := client.DoStream(ctx, req.HTTPClient, http.MethodPost, route.Path, route.Query, requestHeaders(req, route.Format), requestBody)
+	resp, errDo := client.DoStreamWithAgent(ctx, req.HTTPClient, http.MethodPost, route.Path, route.Query, requestHeaders(req, route.Format), requestBody, route.Agent)
 	if errDo != nil {
 		return pluginapi.ExecutorStreamResponse{}, errDo
 	}
@@ -222,6 +293,10 @@ type providerRoute struct {
 	Format sdktranslator.Format
 	Path   string
 	Query  url.Values
+	// Agent is the Mirasim agent family announced in x-mirasim-agent. It is
+	// derived from the model, not just the path, because the relay routes
+	// non-Claude/non-GPT families (dsh, kimi) by the announced agent.
+	Agent string
 }
 
 // claudeShape resolves the upstream thinking form from the account's signed
@@ -243,7 +318,7 @@ func buildProviderRequest(req pluginapi.ExecutorRequest, stream bool, shape thin
 	parsedModel := thinkingpkg.ParseModel(req.Model)
 	model := parsedModel.ModelName
 	source := sourceFormat(req)
-	wire := selectWireFormat(model, source)
+	wire, agent := selectWireFormat(model, source)
 	// Fold ultra into max before translation so a transformer that does not
 	// recognize it cannot drop the caller's effort on the way through.
 	payload := thinkingpkg.NormalizeWorkflowRequest(req.Payload)
@@ -268,23 +343,25 @@ func buildProviderRequest(req pluginapi.ExecutorRequest, stream bool, shape thin
 	if wire == sdktranslator.FormatClaude {
 		path = "/v1/messages"
 	}
-	return body, providerRoute{Format: wire, Path: path, Query: cloneValues(req.Query)}, nil
+	return body, providerRoute{Format: wire, Path: path, Query: cloneValues(req.Query), Agent: agent}, nil
 }
 
-func selectWireFormat(model string, source sdktranslator.Format) sdktranslator.Format {
+// selectWireFormat picks the relay wire protocol and the agent family to
+// announce for a model. Claude goes to the Messages wire as agent "claude";
+// GPT goes to the Responses wire as agent "codex". The remaining relay
+// families (DeepSeek "dsh", Moonshot "kimi", and GLM served under the claude
+// channel) are all served on the Messages wire by the official client, so they
+// route as agent "claude" — GLM has no roster family of its own and the
+// desktop client reaches it through the same channel, while the relay answers
+// dsh/kimi models on /v1/messages regardless of the announced family.
+func selectWireFormat(model string, source sdktranslator.Format) (sdktranslator.Format, string) {
 	normalizedModel := strings.ToLower(normalizeModel(model))
 	if strings.HasPrefix(normalizedModel, "gpt-") {
-		return sdktranslator.FormatCodex
+		return sdktranslator.FormatCodex, "codex"
 	}
-	if strings.HasPrefix(normalizedModel, "claude-") {
-		return sdktranslator.FormatClaude
-	}
-	// Unknown model families retain the caller's native Claude shape. Published
-	// Mirasim models are family-prefixed and therefore take the branches above.
-	if source == sdktranslator.FormatClaude {
-		return sdktranslator.FormatClaude
-	}
-	return sdktranslator.FormatCodex
+	// Everything else — claude-, glm-, kimi-, deepseek- and any future relay
+	// model — speaks the Claude Messages wire on the claude channel.
+	return sdktranslator.FormatClaude, "claude"
 }
 
 func sourceFormat(req pluginapi.ExecutorRequest) sdktranslator.Format {

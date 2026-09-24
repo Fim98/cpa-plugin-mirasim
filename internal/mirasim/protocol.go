@@ -170,7 +170,7 @@ func (c *Client) signatureHeadersLocked(method, requestPath, credential string, 
 	return headers, nil
 }
 
-func (c *Client) relayMetadataLocked(ctx context.Context, requestPath string) (map[string]string, error) {
+func (c *Client) relayMetadataLocked(ctx context.Context, requestPath string, extra map[string]string) (map[string]string, error) {
 	if c.sessionID == "" {
 		sessionID, errSession := randomUUID(rand.Reader)
 		if errSession != nil {
@@ -189,6 +189,14 @@ func (c *Client) relayMetadataLocked(ctx context.Context, requestPath string) (m
 		headerMirasimSession: c.sessionID,
 		headerMirasimAgent:   relayAgent(requestPath),
 		headerMirasimCall:    callID,
+	}
+	// A model-routed agent family overrides the path-derived default, so a
+	// non-claude model served on /v1/messages can still announce the family the
+	// relay routes it by.
+	for name, value := range extra {
+		if value != "" {
+			metadata[name] = value
+		}
 	}
 	if identity, ok := ctx.Value(requestIdentityKey{}).(requestIdentity); ok {
 		if identity.session != "" {
@@ -211,6 +219,18 @@ func (c *Client) relayMetadataLocked(ctx context.Context, requestPath string) (m
 		metadata["x-mirasim-collect"] = "off"
 	}
 	return metadata, nil
+}
+
+// relayAgentForModel names the Mirasim agent family a relay call announces.
+// GPT models ride the codex family; everything else — including the DeepSeek
+// and Kimi families the relay serves on the Messages wire — announces claude,
+// which is what the official client does when it reaches those models through
+// its Claude channel gateway.
+func relayAgentForModel(model string) string {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-") {
+		return "codex"
+	}
+	return "claude"
 }
 
 func relayAgent(requestPath string) string {

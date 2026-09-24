@@ -22,6 +22,9 @@ var fallbackModelIDs = []string{
 	"gpt-5.6-luna",
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
+	"glm-5.3-flash",
+	"deepseek-flash",
+	"kimi-k3",
 }
 
 type modelDefinition struct {
@@ -180,15 +183,18 @@ func applyCatalogContext(model *pluginapi.ModelInfo, contextWindow int64) {
 	model.InputTokenLimit = contextWindow
 }
 
-// isExposedModel keeps the families this plugin has a wire for: Claude goes to
-// Messages and GPT to Responses. The official client hides the other families
-// the relay lists from its own picker, so nothing servable is withheld here.
+// isExposedModel keeps the families this plugin has a wire for: Claude and the
+// Chinese families (GLM, DeepSeek, Kimi) ride the Messages wire; GPT rides the
+// Responses wire. The official client reaches every one of these through its
+// own gateways, so nothing servable is withheld here.
 func isExposedModel(id string) bool {
 	id = strings.ToLower(strings.TrimSpace(id))
 	if mirasim.PaidVariantModel(id) {
 		return false
 	}
-	return strings.HasPrefix(id, "claude-") || strings.HasPrefix(id, "gpt-")
+	return strings.HasPrefix(id, "claude-") || strings.HasPrefix(id, "gpt-") ||
+		strings.HasPrefix(id, "glm-") || strings.HasPrefix(id, "deepseek-") ||
+		strings.HasPrefix(id, "kimi-")
 }
 
 func modelInfo(id, object string, created int64, owner string) pluginapi.ModelInfo {
@@ -232,14 +238,25 @@ func modelInfo(id, object string, created int64, owner string) pluginapi.ModelIn
 }
 
 func genericDefinition(id string) modelDefinition {
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(id)), "claude-") {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if strings.HasPrefix(id, "claude-") {
 		return modelDefinition{
 			modelType: "claude", methods: []string{"messages", "countTokens"},
 			parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice"},
 		}
 	}
+	if strings.HasPrefix(id, "gpt-") {
+		return modelDefinition{
+			modelType: "openai", methods: []string{"responses"}, parameters: []string{"tools"},
+		}
+	}
+	// GLM, DeepSeek and Kimi models are served on the Messages wire. They take
+	// effort-style thinking (the roster advertises low/high/max ladders, DeepSeek
+	// also "off"), never a token budget, and never the Claude [1m] selector.
 	return modelDefinition{
-		modelType: "openai", methods: []string{"responses"}, parameters: []string{"tools"},
+		modelType: "claude", methods: []string{"messages"},
+		parameters: []string{"max_tokens", "stop_sequences", "tools", "tool_choice", "thinking"},
+		thinking:   adaptiveRelayThinking(),
 	}
 }
 

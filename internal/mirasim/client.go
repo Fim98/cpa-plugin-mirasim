@@ -290,7 +290,18 @@ func (c *Client) RefreshForHost(ctx context.Context, proxyURL string) (time.Time
 }
 
 func (c *Client) Do(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers http.Header, body []byte) (pluginapi.HTTPResponse, error) {
-	return c.do(ctx, client, method, requestPath, query, headers, nil, body, false)
+	return c.DoWithAgent(ctx, client, method, requestPath, query, headers, body, "")
+}
+
+// DoWithAgent is Do with an explicit x-mirasim-agent override. A model whose
+// family differs from the path default announces its own family; empty keeps
+// the path-derived agent.
+func (c *Client) DoWithAgent(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers http.Header, body []byte, agent string) (pluginapi.HTTPResponse, error) {
+	extra := map[string]string{}
+	if agent != "" {
+		extra[headerMirasimAgent] = agent
+	}
+	return c.do(ctx, client, method, requestPath, query, headers, nil, body, false, extra)
 }
 
 // doControl issues a control-plane request the way the official client does:
@@ -299,12 +310,12 @@ func (c *Client) Do(ctx context.Context, client pluginapi.HostHTTPClient, method
 // locale or collection signal, and an operator who turned collection off does
 // not have one attached to them here.
 func (c *Client) doControl(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers, providerHeaders http.Header, body []byte) (pluginapi.HTTPResponse, error) {
-	return c.do(ctx, client, method, requestPath, query, headers, providerHeaders, body, true)
+	return c.do(ctx, client, method, requestPath, query, headers, providerHeaders, body, true, nil)
 }
 
 // do accepts provider-owned headers separately so untrusted downstream
 // x-mirasim-* values can remain blocked while internal probes are forwarded.
-func (c *Client) do(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers, providerHeaders http.Header, body []byte, controlPlane bool) (pluginapi.HTTPResponse, error) {
+func (c *Client) do(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers, providerHeaders http.Header, body []byte, controlPlane bool, agentOverride map[string]string) (pluginapi.HTTPResponse, error) {
 	if client == nil {
 		return pluginapi.HTTPResponse{}, fmt.Errorf("host HTTP client is required")
 	}
@@ -313,7 +324,7 @@ func (c *Client) do(ctx context.Context, client pluginapi.HostHTTPClient, method
 		return pluginapi.HTTPResponse{}, errURL
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		authHeaders, errAuth := c.authHeaders(ctx, client, method, signaturePath, body, attempt > 0, controlPlane)
+		authHeaders, errAuth := c.authHeadersWithMetadata(ctx, client, method, signaturePath, body, attempt > 0, controlPlane, agentOverride)
 		if errAuth != nil {
 			return pluginapi.HTTPResponse{}, errAuth
 		}
@@ -343,6 +354,12 @@ func (c *Client) do(ctx context.Context, client pluginapi.HostHTTPClient, method
 }
 
 func (c *Client) DoStream(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers http.Header, body []byte) (pluginapi.HTTPStreamResponse, error) {
+	return c.DoStreamWithAgent(ctx, client, method, requestPath, query, headers, body, "")
+}
+
+// DoStreamWithAgent is DoStream with an explicit x-mirasim-agent override;
+// empty keeps the path-derived agent.
+func (c *Client) DoStreamWithAgent(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, query url.Values, headers http.Header, body []byte, agent string) (pluginapi.HTTPStreamResponse, error) {
 	if client == nil {
 		return pluginapi.HTTPStreamResponse{}, fmt.Errorf("host HTTP client is required")
 	}
@@ -350,8 +367,12 @@ func (c *Client) DoStream(ctx context.Context, client pluginapi.HostHTTPClient, 
 	if errURL != nil {
 		return pluginapi.HTTPStreamResponse{}, errURL
 	}
+	extra := map[string]string{}
+	if agent != "" {
+		extra[headerMirasimAgent] = agent
+	}
 	for attempt := 0; attempt < 2; attempt++ {
-		authHeaders, errAuth := c.authHeaders(ctx, client, method, signaturePath, body, attempt > 0, false)
+		authHeaders, errAuth := c.authHeadersWithMetadata(ctx, client, method, signaturePath, body, attempt > 0, false, extra)
 		if errAuth != nil {
 			return pluginapi.HTTPStreamResponse{}, errAuth
 		}
@@ -443,6 +464,10 @@ func (c *Client) replaceQuota(quota QuotaSnapshot) {
 }
 
 func (c *Client) authHeaders(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, body []byte, forceTicket, controlPlane bool) (http.Header, error) {
+	return c.authHeadersWithMetadata(ctx, client, method, requestPath, body, forceTicket, controlPlane, nil)
+}
+
+func (c *Client) authHeadersWithMetadata(ctx context.Context, client pluginapi.HostHTTPClient, method, requestPath string, body []byte, forceTicket, controlPlane bool, extraMetadata map[string]string) (http.Header, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if errLoad := c.loadLocked(); errLoad != nil {
@@ -462,7 +487,7 @@ func (c *Client) authHeaders(ctx context.Context, client pluginapi.HostHTTPClien
 	}
 	var metadata map[string]string
 	if !controlPlane {
-		relayMetadata, errMetadata := c.relayMetadataLocked(ctx, requestPath)
+		relayMetadata, errMetadata := c.relayMetadataLocked(ctx, requestPath, extraMetadata)
 		if errMetadata != nil {
 			return nil, errMetadata
 		}
